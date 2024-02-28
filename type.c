@@ -421,7 +421,7 @@ void add_type(Node *node) {
         return;
       }
     }
-    internal_error();
+    node->ty = ty_void;
     return;
   case ND_LABEL_VAL:
     node->ty = pointer_to(ty_void);
