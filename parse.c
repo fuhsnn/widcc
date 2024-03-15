@@ -103,9 +103,6 @@ static Obj *brk_vla;
 static bool fn_use_vla;
 static bool dont_dealloc_vla;
 
-static Obj *builtin_alloca;
-
-
 static bool *eval_recover;
 
 static bool is_typename(Token *tok);
@@ -849,13 +846,10 @@ static Node *compute_vla_size(Type *ty, Token *tok) {
   return node;
 }
 
-static Node *new_alloca(Node *sz, Obj *var, Obj *top, int align) {
-  Node *node = new_unary(ND_FUNCALL, new_var_node(builtin_alloca, sz->tok), sz->tok);
-  node->ty = builtin_alloca->ty->return_ty;
-  node->args_expr = sz;
+static Node *new_vla(Node *sz, Obj *var) {
+  Node *node = new_unary(ND_ALLOCA, sz, sz->tok);
+  node->ty = pointer_to(ty_void);
   node->var = var;
-  node->top_vla = top;
-  node->val = align;
   add_type(sz);
   return node;
 }
@@ -911,12 +905,10 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
       // For example, `int x[n+2]` is translated to `tmp = n + 2,
       // x = alloca(tmp)`.
       Obj *var = new_lvar(get_ident(name), ty);
-      Obj *top = new_lvar(NULL, ty);
+      chain_expr(&expr, new_vla(new_var_node(ty->vla_size, name), var));
 
-      chain_expr(&expr, new_alloca(new_var_node(ty->vla_size, name), var, top, 16));
-
-      top->vla_next = current_vla;
-      current_vla = top;
+      var->vla_next = current_vla;
+      current_vla = var;
       fn_use_vla = true;
       continue;
     }
@@ -3321,6 +3313,15 @@ static Node *primary(Token **rest, Token *tok) {
   if (equal(tok, "_Generic"))
     return generic_selection(rest, tok->next);
 
+  if (equal(tok, "__builtin_alloca")) {
+    Node *node = new_node(ND_ALLOCA, tok);
+    tok = skip(tok->next, "(");
+    node->lhs = assign(&tok, tok);
+    *rest = skip(tok, ")");
+    node->ty = pointer_to(ty_void);
+    return node;
+  }
+
   if (equal(tok, "__builtin_offsetof")) {
     tok = skip(tok->next, "(");
     Type *ty = typename(&tok, tok);
@@ -3689,16 +3690,8 @@ static void scan_globals(void) {
   globals = head.next;
 }
 
-static void declare_builtin_functions(void) {
-  Type *ty = func_type(pointer_to(ty_void));
-  ty->param_list = new_var(NULL, ty_int);
-  builtin_alloca = new_gvar("alloca", ty);
-  builtin_alloca->is_static = true;
-}
-
 // program = (typedef | function-definition | global-variable)*
 Obj *parse(Token *tok) {
-  declare_builtin_functions();
   globals = NULL;
 
   while (tok->kind != TK_EOF) {
