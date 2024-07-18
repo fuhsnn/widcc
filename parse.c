@@ -147,8 +147,9 @@ static Node *new_sub(Node *lhs, Node *rhs, Token *tok);
 static Node *mul(Token **rest, Token *tok);
 static Node *cast(Token **rest, Token *tok);
 static Member *get_struct_member(Type *ty, Token *tok);
-static Type *struct_decl(Token **rest, Token *tok);
-static Type *union_decl(Token **rest, Token *tok);
+static Type *struct_union_decl(Token **rest, Token *tok, TypeKind kind);
+static Type *struct_decl(Type *ty);
+static Type *union_decl(Type *ty);
 static Node *postfix(Token **rest, Token *tok);
 static Node *funcall(Token **rest, Token *tok, Node *node);
 static Node *unary(Token **rest, Token *tok);
@@ -498,9 +499,9 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         break;
 
       if (equal(tok, "struct")) {
-        ty = struct_decl(&tok, tok->next);
+        ty = struct_union_decl(&tok, tok->next, TY_STRUCT);
       } else if (equal(tok, "union")) {
-        ty = union_decl(&tok, tok->next);
+        ty = struct_union_decl(&tok, tok->next, TY_UNION);
       } else if (equal(tok, "enum")) {
         ty = enum_specifier(&tok, tok->next);
       } else if (equal(tok, "typeof") || equal(tok, "__typeof") || equal(tok, "__typeof__")) {
@@ -2861,11 +2862,9 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
   ty->members = head.next;
 }
 
-static void attribute_packed(Token *tok, Type *ty, bool no_battr) {
+static void attr_packed(Token *tok, Type *ty) {
   for (Token *lst = tok->attr_next; lst; lst = lst->attr_next) {
     if (equal(lst, "packed") || equal(lst, "__packed__")) {
-      if (no_battr && lst->kind == TK_BATTR)
-        continue;
       ty->is_packed = true;
       continue;
     }
@@ -2873,9 +2872,9 @@ static void attribute_packed(Token *tok, Type *ty, bool no_battr) {
 }
 
 // struct-union-decl = attribute? ident? ("{" struct-members)?
-static Type *struct_union_decl(Token **rest, Token *tok, bool *no_list) {
-  Type *ty = struct_type();
-  attribute_packed(tok, ty, false);
+static Type *struct_union_decl(Token **rest, Token *tok, TypeKind kind) {
+  Type *ty = new_type(kind, -1, 1);
+  attr_packed(tok, ty);
 
   // Read a tag.
   Token *tag = NULL;
@@ -2886,122 +2885,107 @@ static Type *struct_union_decl(Token **rest, Token *tok, bool *no_list) {
 
   if (tag && !equal(tok, "{")) {
     *rest = tok;
-    *no_list = true;
 
     Type *ty2 = find_tag(tag);
     if (ty2)
       return ty2;
 
-    ty->size = -1;
     push_tag_scope(tag, ty);
     return ty;
   }
-
   tok = skip(tok, "{");
 
   // Construct a struct object.
   struct_members(&tok, tok, ty);
-  attribute_packed(tok, ty, true);
+
+  attr_packed(tok, ty);
   *rest = tok;
 
-  if (tag) {
-    // If this is a redefinition, overwrite a previous type.
-    // Otherwise, register the struct type.
-    Type *ty2 = hashmap_get2(&scope->tags, tag->loc, tag->len);
-    if (ty2) {
-      *ty2 = *ty;
-      return ty2;
-    }
+  if (kind == TY_STRUCT)
+    ty = struct_decl(ty);
+  else
+    ty = union_decl(ty);
 
-    push_tag_scope(tag, ty);
+  if (!tag)
+    return ty;
+
+  Type *ty2 = hashmap_get2(&scope->tags, tag->loc, tag->len);
+  if (ty2) {
+    *ty2 = *ty;
+    return ty2;
   }
-
+  push_tag_scope(tag, ty);
   return ty;
 }
 
-// struct-decl = struct-union-decl
-static Type *struct_decl(Token **rest, Token *tok) {
-  bool no_list = false;
-  Type *ty = struct_union_decl(rest, tok, &no_list);
-  ty->kind = TY_STRUCT;
-
-  if (no_list)
-    return ty;
-
-  // Assign offsets within the struct to members.
+static Type *struct_decl(Type *ty) {
   int bits = 0;
   Member head = {0};
   Member *cur = &head;
+  int max_align = 0;
 
   for (Member *mem = ty->members; mem; mem = mem->next) {
-    if (mem->is_bitfield && mem->bit_width == 0) {
-      // Zero-width anonymous bitfield has a special meaning.
-      // It affects only alignment.
-      bits = align_to(bits, mem->ty->size * 8);
-    } else if (mem->is_bitfield) {
+    if (!mem->is_bitfield || mem->name) {
+      cur = cur->next = mem;
+      max_align = MAX(max_align, mem->ty->align);
+    }
+    if (mem->is_bitfield) {
+      if (mem->bit_width == 0) {
+        bits = align_to(bits, mem->ty->size * 8);
+        continue;
+      }
       int sz = mem->ty->size;
-      if (bits / (sz * 8) != (bits + mem->bit_width - 1) / (sz * 8))
-        bits = align_to(bits, sz * 8);
+      if (!ty->is_packed)
+        if (bits / (sz * 8) != (bits + mem->bit_width - 1) / (sz * 8))
+          bits = align_to(bits, sz * 8);
 
       mem->offset = align_down(bits / 8, sz);
       mem->bit_offset = bits % (sz * 8);
       bits += mem->bit_width;
-    } else {
-      if (!ty->is_packed)
-        bits = align_to(bits, mem->align * 8);
-      mem->offset = bits / 8;
-      bits += mem->ty->size * 8;
-    }
-
-    if (!mem->name && mem->is_bitfield)
       continue;
+    }
+    if (ty->is_packed)
+      bits = align_to(bits, 8);
+    else
+      bits = align_to(bits, mem->ty->align * 8);
 
-    if (!ty->is_packed && ty->align < mem->align)
-      ty->align = mem->align;
-
-    cur = cur->next = mem;
+    mem->offset = bits / 8;
+    bits += mem->ty->size * 8;
   }
   cur->next = NULL;
-
   ty->members = head.next;
-  ty->size = align_to(bits, ty->align * 8) / 8;
+
+  if (!ty->is_packed && max_align)
+    ty->align = max_align;
+  if (ty->is_packed)
+    ty->size = align_to(bits, 8) / 8;
+  else
+    ty->size = align_to(bits, ty->align * 8) / 8;
   return ty;
 }
 
-// union-decl = struct-union-decl
-static Type *union_decl(Token **rest, Token *tok) {
-  bool no_list = false;
-  Type *ty = struct_union_decl(rest, tok, &no_list);
-  ty->kind = TY_UNION;
-
-  if (no_list)
-    return ty;
-
-  // If union, we don't have to assign offsets because they
-  // are already initialized to zero. We need to compute the
-  // alignment and the size though.
+static Type *union_decl(Type *ty) {
   Member head = {0};
   Member *cur = &head;
+  int max_align = 0;
+
   for (Member *mem = ty->members; mem; mem = mem->next) {
+    if (!mem->is_bitfield || mem->name) {
+      cur = cur->next = mem;
+      max_align = MAX(max_align, mem->ty->align);
+    }
     int sz;
     if (mem->is_bitfield)
       sz = align_to(mem->bit_width, 8) / 8;
     else
       sz = mem->ty->size;
-
     ty->size = MAX(ty->size, sz);
-
-    if (!mem->name && mem->is_bitfield)
-      continue;
-
-    if (ty->align < mem->align)
-      ty->align = mem->align;
-
-    cur = cur->next = mem;
   }
   cur->next = NULL;
-
   ty->members = head.next;
+
+  if (!ty->is_packed && max_align)
+    ty->align = max_align;
   ty->size = align_to(ty->size, ty->align);
   return ty;
 }

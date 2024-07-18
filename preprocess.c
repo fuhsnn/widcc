@@ -72,7 +72,7 @@ static Macro *find_macro(Token *tok);
 static bool expand_macro(Token **rest, Token *tok);
 static Token *directives(Token **cur, Token *start);
 static Token *subst(Token *tok, MacroArg *args);
-static long is_supported_attr(Token **vendor, Token *tok);
+static bool is_supported_attr(Token *tok);
 
 static bool is_hash(Token *tok) {
   return tok->at_bol && equal(tok, "#");
@@ -237,28 +237,6 @@ static Token *split_paren(Token **rest, Token *tok) {
     if (equal(tok, "("))
       level++;
     else if (equal(tok, ")"))
-      level--;
-    else if (tok->kind == TK_EOF)
-      error_tok(start, "unterminated list");
-
-    cur = cur->next = tok;
-    tok = tok->next;
-  }
-  *rest = tok->next;
-  cur->next = to_eof(tok);
-  return head.next;
-}
-
-static Token *split_bracket(Token **rest, Token *tok) {
-  Token *start = tok;
-  Token head = {0};
-  Token *cur = &head;
-
-  int level = 0;
-  while (!(level == 0 && equal(tok, "]"))) {
-    if (equal(tok, "["))
-      level++;
-    else if (equal(tok, "]"))
       level--;
     else if (tok->kind == TK_EOF)
       error_tok(start, "unterminated list");
@@ -766,7 +744,6 @@ static bool expand_macro(Token **rest, Token *tok) {
   if (!m->is_objlike && m->body->kind == TK_EOF && equal(tok, "__attribute__")) {
     char *slash = strrchr(m->body->file->name, '/');
     if (slash && !strcmp(slash + 1, "cdefs.h")) {
-      tok->is_hidden_attr = true;
       push_macro_lock(m, skip_paren(skip(tok->next, "(")));
       return true;
     }
@@ -1236,30 +1213,12 @@ static Token *has_include_macro(Token *start) {
 static Token *has_attribute_macro(Token *start) {
   Token *tok = skip(start->next, "(");
 
-  long val = is_supported_attr(NULL, tok);
+  to_int_token(start, is_supported_attr(tok));
 
   tok = skip(tok->next, ")");
   pop_macro_lock_until(start, tok);
-  Token *tok2 = new_num_token(val, start);
-  tok2->next = tok;
-  return tok2;
-}
-
-static Token *has_c_attribute_macro(Token *start) {
-  Token *tok = skip(start->next, "(");
-
-  Token *vendor = NULL;
-  if (tok->kind == TK_IDENT && equal(tok->next, ":")) {
-    vendor = tok;
-    tok = skip(tok->next->next, ":");
-  }
-  long val = is_supported_attr(&vendor, tok);
-
-  tok = skip(tok->next, ")");
-  pop_macro_lock_until(start, tok);
-  Token *tok2 = new_num_token(val, start);
-  tok2->next = tok;
-  return tok2;
+  start->next = tok;
+  return start;
 }
 
 static Token *has_builtin_macro(Token *start) {
@@ -1356,7 +1315,6 @@ void init_macros(void) {
   add_builtin("_Pragma", pragma_macro);
 
   add_builtin("__has_attribute", has_attribute_macro);
-  add_builtin("__has_c_attribute", has_c_attribute_macro);
   add_builtin("__has_builtin", has_builtin_macro);
   add_builtin("__has_include", has_include_macro);
 
@@ -1434,40 +1392,25 @@ static void join_adjacent_string_literals(Token *tok) {
   tok->next = end;
 }
 
-static long is_supported_attr(Token **vendor, Token *tok) {
+static bool is_supported_attr(Token *tok) {
   if (tok->kind != TK_IDENT)
     error_tok(tok, "expected attribute name");
 
-  bool vendor_gnu = vendor && *vendor && equal(*vendor, "gnu");
-
-  if ((equal(tok, "packed") || equal(tok, "__packed__")) &&
-    (!vendor || vendor_gnu)) {
+  if (equal(tok, "packed") || equal(tok, "__packed__"))
     return 1;
-  }
+
   return 0;
 }
 
-static void filter_attr(Token *tok, Token *lst, bool is_hidden, bool is_bracket) {
+static void filter_attr(Token *tok, Token **lst) {
   bool first = true;
   for (; tok->kind != TK_EOF; first = false) {
     if (!first)
       tok = skip(tok, ",");
 
-    if (is_bracket) {
-      Token *vendor = NULL;
-      if (tok->kind == TK_IDENT && equal(tok->next, ":")) {
-        vendor = tok;
-        tok = skip(tok->next->next, ":");
-      }
-      if (is_supported_attr(&vendor, tok)) {
-        tok->kind = TK_BATTR;
-        lst = lst->attr_next = tok;
-      }
-    } else {
-      if (is_supported_attr(NULL, tok)) {
-        tok->kind = TK_ATTR;
-        lst = lst->attr_next = tok;
-      }
+    if (is_supported_attr(tok)) {
+      tok->kind = TK_ATTR;
+      *lst = (*lst)->attr_next = tok;
     }
     if (consume(&tok, tok->next, "(")) {
       tok = skip_paren(tok);
@@ -1482,24 +1425,17 @@ static Token *preprocess3(Token *tok) {
   Token head = {0};
   Token *cur = &head;
 
-  while (tok->kind != TK_EOF) {
-    if (equal(tok, "__attribute__")) {
-      bool is_hidden = tok->is_hidden_attr;
+  Token attr_head = {0};
+  Token *attr_cur = &attr_head;
 
+  while (tok->kind != TK_EOF) {
+    if (equal(tok, "__attribute__") || equal(tok, "__attribute")) {
       tok = skip(tok->next, "(");
       tok = skip(tok, "(");
       Token *list = split_paren(&tok, tok);
       tok = skip(tok, ")");
 
-      filter_attr(list, tok, is_hidden, false);
-      continue;
-    }
-
-    if (equal(tok, "[") && consume(&tok, tok->next, "[")) {
-      Token *list = split_bracket(&tok, tok);
-      tok = skip(tok, "]");
-
-      filter_attr(list, tok, false, true);
+      filter_attr(list, &attr_cur);
       continue;
     }
 
@@ -1508,6 +1444,10 @@ static Token *preprocess3(Token *tok) {
 
     if (tok->kind == TK_STR && tok->next->kind == TK_STR)
       join_adjacent_string_literals(tok);
+
+    tok->attr_next = attr_head.attr_next;
+    attr_head.attr_next = NULL;
+    attr_cur = &attr_head;
 
     cur = cur->next = tok;
     tok = tok->next;

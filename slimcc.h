@@ -92,7 +92,6 @@ typedef enum {
   TK_PP_NUM,  // Preprocessing numbers
   TK_PMARK,   // Placermarkers
   TK_ATTR,    // GNU attribute
-  TK_BATTR,   // C23 attribute
   TK_EOF,     // End-of-file markers
 } TokenKind;
 
@@ -126,7 +125,6 @@ struct Token {
   bool at_bol;      // True if this token is at beginning of line
   bool has_space;   // True if this token follows a space character
   bool dont_expand; // True if a macro token is encountered during the macro's expansion
-  bool is_hidden_attr;
   Token *origin;    // If this is expanded from a macro, the original token
   char *guard_file; // The path of a potentially include-guarded file
   Token *attr_next;
@@ -475,8 +473,8 @@ Type *func_type(Type *return_ty);
 Type *array_of(Type *base, int size);
 Type *vla_of(Type *base, Node *expr);
 Type *enum_type(void);
-Type *struct_type(void);
 void add_type(Node *node);
+Type *new_type(TypeKind kind, int size, int align);
 
 //
 // codegen.c
