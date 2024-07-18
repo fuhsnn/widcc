@@ -171,7 +171,6 @@ struct Obj {
   char *name;    // Variable name
   Type *ty;      // Type
   bool is_local; // local or global/function
-  int align;     // alignment
 
   // Local variable
   int ofs;
@@ -204,7 +203,6 @@ struct Obj {
   int va_fp_ofs;
   int va_st_ofs;
   Obj *vla_base;
-  int stack_align;
   int lvar_stack_size;
 
   // Static inline function
@@ -431,7 +429,6 @@ struct Member {
   Type *ty;
   Token *name;
   int idx;
-  int align;
   int offset;
 
   // Bitfield

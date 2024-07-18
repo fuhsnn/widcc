@@ -1546,16 +1546,6 @@ static void gen_stmt(Node *node) {
   error_tok(node->tok, "invalid statement");
 }
 
-static void calc_stack_align(Scope *scp, int *align) {
-  for (Obj *var = scp->locals; var; var = var->next) {
-    if (var->ofs)
-      continue;
-    *align = MAX(*align, var->align);
-  }
-  for (Scope *sub = scp->children; sub; sub = sub->sibling_next)
-    calc_stack_align(sub, align);
-}
-
 static int assign_lvar_offsets2(Scope *sc, int bottom, char *ptr) {
   for (Obj *var = sc->locals; var; var = var->next) {
     if (var->ofs)
@@ -1566,7 +1556,7 @@ static int assign_lvar_offsets2(Scope *sc, int bottom, char *ptr) {
     // 16-byte boundaries. See p.14 of
     // https://github.com/hjl-tools/x86-psABI/wiki/x86-64-psABI-draft.pdf.
     int align = (var->ty->kind == TY_ARRAY && var->ty->size >= 16)
-      ? MAX(16, var->align) : var->align;
+      ? MAX(16, var->ty->align) : var->ty->align;
 
     bottom += var->ty->size;
     bottom = align_to(bottom, align);
@@ -1612,11 +1602,7 @@ static void assign_lvar_offsets(Obj *prog) {
       var->ptr = "%rbp";
     }
 
-    int st_align = 16;
-    calc_stack_align(fn->ty->scopes, &st_align);
-    fn->stack_align = st_align;
-
-    char *lvar_ptr = (fn->stack_align > 16) ? "%rbx" : "%rbp";
+    char *lvar_ptr = "%rbp";
     fn->lvar_stack_size = assign_lvar_offsets2(fn->ty->scopes, 0, lvar_ptr);
   }
 }
@@ -1632,7 +1618,7 @@ static void emit_data(Obj *prog) {
       println("  .globl \"%s\"", var->name);
 
     int align = (var->ty->kind == TY_ARRAY && var->ty->size >= 16)
-      ? MAX(16, var->align) : var->align;
+      ? MAX(16, var->ty->align) : var->ty->align;
 
     // Common symbol
     if (opt_fcommon && var->is_tentative) {
@@ -1745,18 +1731,11 @@ static void emit_text(Obj *prog) {
     current_fn = fn;
     tmp_stack.bottom = fn->lvar_stack_size;
 
-    bool use_rbx = fn->stack_align > 16;
-    lvar_ptr = use_rbx ? "%rbx" : "%rbp";
+    lvar_ptr = "%rbp";
 
     // Prologue
     println("  push %%rbp");
     println("  mov %%rsp, %%rbp");
-    if (use_rbx) {
-      println("  push %%rbx");
-      println("  mov %%rsp, %%rbx");
-      println("  and $-%d, %%rbx", fn->stack_align);
-      println("  mov %%rbx, %%rsp");
-    }
 
     long stack_alloc_loc = resrvln();
 
@@ -1842,8 +1821,6 @@ static void emit_text(Obj *prog) {
 
     // Epilogue
     println("9:");
-    if (use_rbx)
-      println("  mov -8(%%rbp), %%rbx");
     println("  mov %%rbp, %%rsp");
     println("  pop %%rbp");
     println("  ret");

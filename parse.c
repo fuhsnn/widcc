@@ -35,7 +35,6 @@ typedef struct {
   bool is_inline;
   bool is_tls;
   bool is_constexpr;
-  int align;
 } VarAttr;
 
 // This struct represents a variable initializer. Since initializers
@@ -308,7 +307,6 @@ static Obj *new_var(char *name, Type *ty) {
   Obj *var = calloc(1, sizeof(Obj));
   var->name = name;
   var->ty = ty;
-  var->align = ty->align;
   if (name)
     push_scope(name)->var = var;
   return var;
@@ -475,19 +473,6 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         tok = skip(tok, ")");
       }
       is_atomic = true;
-      continue;
-    }
-
-    if (equal(tok, "_Alignas")) {
-      if (!attr)
-        error_tok(tok, "_Alignas is not allowed in this context");
-      tok = skip(tok->next, "(");
-
-      if (is_typename(tok))
-        attr->align = typename(&tok, tok)->align;
-      else
-        attr->align = const_expr(&tok, tok);
-      tok = skip(tok, ")");
       continue;
     }
 
@@ -928,9 +913,7 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
       Obj *var = new_lvar(get_ident(name), ty);
       Obj *top = new_lvar(NULL, ty);
 
-      int align = (attr && attr->align) ? attr->align : 16;
-
-      chain_expr(&expr, new_alloca(new_var_node(ty->vla_size, name), var, top, align));
+      chain_expr(&expr, new_alloca(new_var_node(ty->vla_size, name), var, top, 16));
 
       top->vla_next = current_vla;
       current_vla = top;
@@ -939,9 +922,6 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
     }
 
     Obj *var = new_lvar(get_ident(name), ty);
-    if (attr && attr->align)
-      var->align = attr->align;
-
     if (attr && attr->is_constexpr) {
       if (!equal(tok, "="))
         error_tok(tok, "constexpr variable not initialized");
@@ -1582,7 +1562,7 @@ static bool is_typename(Token *tok) {
   if (map.capacity == 0) {
     static char *kw[] = {
       "void", "_Bool", "char", "short", "int", "long", "struct", "union",
-      "typedef", "enum", "static", "extern", "_Alignas", "signed", "unsigned",
+      "typedef", "enum", "static", "extern", "signed", "unsigned",
       "const", "volatile", "auto", "register", "restrict", "__restrict",
       "__restrict__", "_Noreturn", "float", "double", "inline",
       "_Thread_local", "__thread", "_Atomic", "__typeof", "__typeof__"
@@ -2822,7 +2802,6 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
         consume(&tok, tok, ";")) {
       Member *mem = calloc(1, sizeof(Member));
       mem->ty = basety;
-      mem->align = attr.align ? attr.align : mem->ty->align;
       cur = cur->next = mem;
       continue;
     }
@@ -2834,7 +2813,6 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
       Token *name = NULL;
       mem->ty = declarator(&tok, tok, basety, &name);
       mem->name = name;
-      mem->align = attr.align ? attr.align : mem->ty->align;
 
       for (Type *t = mem->ty; t; t = t->base)
         if (t->kind == TY_VLA)
@@ -3251,7 +3229,6 @@ static Node *generic_selection(Token **rest, Token *tok) {
 //         | "sizeof" "(" type-name ")"
 //         | "sizeof" unary
 //         | "_Alignof" "(" type-name ")"
-//         | "_Alignof" unary
 //         | "_Generic" generic-selection
 //         | "__builtin_types_compatible_p" "(" type-name, type-name, ")"
 //         | ident
@@ -3677,8 +3654,6 @@ static Token *global_declaration(Token *tok, Type *basety, VarAttr *attr) {
     var->is_definition = !attr->is_extern;
     var->is_static = attr->is_static;
     var->is_tls = attr->is_tls;
-    if (attr->align)
-      var->align = attr->align;
 
     if (attr->is_constexpr) {
       if (!equal(tok, "="))
