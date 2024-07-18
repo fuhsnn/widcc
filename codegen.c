@@ -634,13 +634,6 @@ static bool has_flonum2(Type *ty) {
   return has_flonum(ty, 8, 16, 0);
 }
 
-bool va_arg_need_copy(Type *ty) {
-  if (ty->size > 8 && ty->size <= 16) {
-    return has_flonum1(ty) || has_flonum2(ty);
-  }
-  return false;
-}
-
 static int calling_convention(Obj *var, int gp_start, int *gp_count, int *fp_count, int *stack_align) {
   int stack = 0;
   int max_align = 16;
@@ -859,36 +852,6 @@ static void copy_struct_mem(void) {
   println("  mov %d(%s), %%rcx", var->ofs, var->ptr);
   gen_mem_copy(0, "%rax", 0, "%rcx", ty->size);
   println("  mov %%rcx, %%rax");
-}
-
-static void gen_vaarg_reg_copy(Type *ty, Obj *var) {
-  bool reg_class[2] = {!has_flonum1(ty), !has_flonum2(ty)};
-
-  int gp_inc = reg_class[0] + reg_class[1];
-  if (gp_inc) {
-    println("  cmpl $%d, (%%rax)", 48 - gp_inc * 8);
-    println("  ja 1f");
-  }
-  int fp_inc = !reg_class[0] + !reg_class[1];
-  println("  cmpl $%d, 4(%%rax)", 176 - fp_inc * 16);
-  println("  ja 1f");
-
-  for (int i = 0; i < 2; i++) {
-    if (reg_class[i]) {
-      println("  movl (%%rax), %%ecx");   // gp_offset
-      println("  addq 16(%%rax), %%rcx"); // reg_save_area
-      println("  addq $8, (%%rax)");
-    } else {
-      println("  movl 4(%%rax), %%ecx");  // fp_offset
-      println("  addq 16(%%rax), %%rcx"); // reg_save_area
-      println("  addq $16, 4(%%rax)");
-    }
-    gen_mem_copy(0, "%rcx",
-                 i * 8 + var->ofs, var->ptr,
-                 MIN((ty->size - i * 8), 8));
-  }
-  println("  lea %d(%s), %%rdx", var->ofs, var->ptr);
-  return;
 }
 
 static void builtin_alloca(Node *node) {
@@ -1263,42 +1226,50 @@ static void gen_expr(Node *node) {
   }
   case ND_VA_ARG: {
     gen_expr(node->lhs);
+    Type *ty = node->ty;
+    Obj *var = node->var;
 
-    Type *ty = node->ty->base;
     if (ty->size <= 16) {
-      if (va_arg_need_copy(ty)) {
-        // Structs with FP member are split into 8-byte chunks in the
-        // reg save area, we reconstruct the layout with a local copy.
-        gen_vaarg_reg_copy(ty, node->var);
-      } else if (has_flonum1(ty)) {
-        println("  cmpl $%d, 4(%%rax)", 160);
-        println("  ja 1f");
-        println("  movl 4(%%rax), %%edx");  // fp_offset
-        println("  addq 16(%%rax), %%rdx"); // reg_save_area
-        println("  addq $16, 4(%%rax)");
-      } else {
-        int gp_inc = ty->size > 8 ? 2 : 1;
+      int gp_inc = !has_flonum1(ty) + (ty->size > 8 && !has_flonum2(ty));
+      if (gp_inc) {
         println("  cmpl $%d, (%%rax)", 48 - gp_inc * 8);
         println("  ja 1f");
-        println("  movl (%%rax), %%edx");   // gp_offset
-        println("  addq 16(%%rax), %%rdx"); // reg_save_area
-        println("  addq $%d, (%%rax)", gp_inc * 8);
+      }
+      int fp_inc = has_flonum1(ty) + (ty->size > 8 && has_flonum2(ty));
+      if (fp_inc) {
+        println("  cmpl $%d, 4(%%rax)", 176 - fp_inc * 16);
+        println("  ja 1f");
+      }
+      for (int ofs = 0; ofs < ty->size; ofs += 8) {
+        if ((ofs == 0) ? has_flonum1(ty) : has_flonum2(ty)) {
+          println("  movl 4(%%rax), %%ecx");  // fp_offset
+          println("  addq 16(%%rax), %%rcx"); // reg_save_area
+          println("  addq $16, 4(%%rax)");
+        } else {
+          println("  movl (%%rax), %%ecx");   // gp_offset
+          println("  addq 16(%%rax), %%rcx"); // reg_save_area
+          println("  addq $8, (%%rax)");
+        }
+        gen_mem_copy(0, "%rcx",
+                     ofs + var->ofs, var->ptr,
+                     MIN(8, ty->size - ofs));
       }
       println("  jmp 2f");
       println("1:");
     }
-    println("  movq 8(%%rax), %%rdx"); // overflow_arg_area
-    if (ty->align <= 8) {
-      println("  addq $%d, 8(%%rax)", align_to(ty->size, 8));
-    } else {
-      println("  addq $%d, %%rdx", ty->align - 1);
-      println("  andq $-%d, %%rdx", ty->align);
-      println("  lea %d(%%rdx), %%rcx", align_to(ty->size, 8));
-      println("  movq %%rcx, 8(%%rax)");
+
+    println("  movq 8(%%rax), %%rcx"); // overflow_arg_area
+    if (ty->align > 8) {
+      println("  addq $%d, %%rcx", ty->align - 1);
+      println("  andq $-%d, %%rcx", ty->align);
     }
+    println("  movq %%rcx, %%rdx");
+    println("  addq $%d, %%rdx", align_to(ty->size, 8));
+    println("  movq %%rdx, 8(%%rax)");
+
+    gen_mem_copy(0, "%rcx", var->ofs, var->ptr, ty->size);
     if (ty->size <= 16)
       println("2:");
-    println("  mov %%rdx, %%rax");
     return;
   }
   }
