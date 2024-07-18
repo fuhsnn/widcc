@@ -1505,12 +1505,6 @@ static void gen_stmt(Node *node) {
       ax = "%eax", cx = "%ecx", dx = "%edx";
 
     for (Node *n = node->case_next; n; n = n->case_next) {
-      if (n->begin == n->end) {
-        println("  mov $%ld, %s", n->begin, dx);
-        println("  cmp %s, %s", dx, ax);
-        println("  je %s", n->label);
-        continue;
-      }
       println("  mov %s, %s", ax, cx);
       println("  mov $%ld, %s", n->begin, dx);
       println("  sub %s, %s", dx, cx);
@@ -1518,7 +1512,6 @@ static void gen_stmt(Node *node) {
       println("  cmp %s, %s", dx, cx);
       println("  jbe %s", n->label);
     }
-
     if (node->default_case)
       println("  jmp %s", node->default_case->label);
 
