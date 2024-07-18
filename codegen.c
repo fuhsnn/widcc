@@ -1441,7 +1441,7 @@ static void gen_stmt(Node *node) {
   case ND_IF: {
     int c = count();
     gen_expr(node->cond);
-    cmp_zero(node->cond->ty);
+    println("  test %%al, %%al");
     println("  je  .L.else.%d", c);
     gen_stmt(node->then);
     println("  jmp .L.end.%d", c);
@@ -1458,7 +1458,7 @@ static void gen_stmt(Node *node) {
     println(".L.begin.%d:", c);
     if (node->cond) {
       gen_expr(node->cond);
-      cmp_zero(node->cond->ty);
+      println("  test %%al, %%al");
       println("  je %s", node->brk_label);
     }
     gen_stmt(node->then);
@@ -1476,7 +1476,7 @@ static void gen_stmt(Node *node) {
     gen_stmt(node->then);
     println("%s:", node->cont_label);
     gen_expr(node->cond);
-    cmp_zero(node->cond->ty);
+    println("  test %%al, %%al");
     println("  jne .L.begin.%d", c);
     println("%s:", node->brk_label);
     return;

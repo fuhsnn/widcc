@@ -253,7 +253,7 @@ Node *new_cast(Node *expr, Type *ty) {
   return node;
 }
 
-Node *to_bool(Node *expr) {
+static Node *to_bool(Node *expr) {
   return new_cast(expr, ty_bool);
 }
 
@@ -1691,7 +1691,7 @@ static Node *stmt(Token **rest, Token *tok, bool chained) {
   if (equal(tok, "if")) {
     Node *node = new_node(ND_IF, tok);
     tok = skip(tok->next, "(");
-    node->cond = expr(&tok, tok);
+    node->cond = to_bool(expr(&tok, tok));
     tok = skip(tok, ")");
     node->then = stmt(&tok, tok, true);
     if (equal(tok, "else"))
@@ -1805,7 +1805,7 @@ static Node *stmt(Token **rest, Token *tok, bool chained) {
     }
 
     if (!equal(tok, ";"))
-      node->cond = expr(&tok, tok);
+      node->cond = to_bool(expr(&tok, tok));
     tok = skip(tok, ";");
 
     if (!equal(tok, ")"))
@@ -1823,7 +1823,7 @@ static Node *stmt(Token **rest, Token *tok, bool chained) {
   if (equal(tok, "while")) {
     Node *node = new_node(ND_FOR, tok);
     tok = skip(tok->next, "(");
-    node->cond = expr(&tok, tok);
+    node->cond = to_bool(expr(&tok, tok));
     tok = skip(tok, ")");
 
     loop_body(rest, tok, node);
@@ -1837,7 +1837,7 @@ static Node *stmt(Token **rest, Token *tok, bool chained) {
 
     tok = skip(tok, "while");
     tok = skip(tok, "(");
-    node->cond = expr(&tok, tok);
+    node->cond = to_bool(expr(&tok, tok));
     tok = skip(tok, ")");
     *rest = skip(tok, ";");
     return node;
@@ -2486,7 +2486,8 @@ static Node *log_or(Token **rest, Token *tok) {
   Node *node = log_and(&tok, tok);
   while (equal(tok, "||")) {
     Token *start = tok;
-    node = new_binary(ND_LOGOR, to_bool(node), to_bool(log_and(&tok, tok->next)), start);
+    node = new_binary(ND_LOGOR, to_bool(node),
+                      to_bool(log_and(&tok, tok->next)), start);
   }
   *rest = tok;
   return node;
@@ -2497,7 +2498,8 @@ static Node *log_and(Token **rest, Token *tok) {
   Node *node = bit_or(&tok, tok);
   while (equal(tok, "&&")) {
     Token *start = tok;
-    node = new_binary(ND_LOGAND, to_bool(node), to_bool(bit_or(&tok, tok->next)), start);
+    node = new_binary(ND_LOGAND, to_bool(node),
+                      to_bool(bit_or(&tok, tok->next)), start);
   }
   *rest = tok;
   return node;
