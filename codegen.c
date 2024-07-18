@@ -1127,23 +1127,11 @@ static void gen_expr(Node *node) {
     // It looks like the most significant 48 or 56 bits in RAX may
     // contain garbage if a function return type is short or bool/char,
     // respectively. We clear the upper bits here.
-    switch (node->ty->kind) {
-    case TY_BOOL:
-      println("  movzx %%al, %%eax");
-      return;
-    case TY_PCHAR:
-    case TY_CHAR:
-      if (node->ty->is_unsigned)
-        println("  movzbl %%al, %%eax");
+    if (is_integer(node->ty) && node->ty->size < 4) {
+      if (node->ty->kind == TY_BOOL)
+        cast(ty_int, ty_uchar);
       else
-        println("  movsbl %%al, %%eax");
-      return;
-    case TY_SHORT:
-      if (node->ty->is_unsigned)
-        println("  movzwl %%ax, %%eax");
-      else
-        println("  movswl %%ax, %%eax");
-      return;
+        cast(ty_int, node->ty);
     }
 
     // If the return type is a small struct, a value is returned
