@@ -1,4 +1,4 @@
-#include "slimcc.h"
+#include "widcc.h"
 
 void strarray_push(StringArray *arr, char *s) {
   if (!arr->data) {

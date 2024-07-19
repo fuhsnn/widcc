@@ -1,4 +1,4 @@
-#include "slimcc.h"
+#include "widcc.h"
 
 Type *ty_void = &(Type){TY_VOID, 1, 1};
 Type *ty_bool = &(Type){TY_BOOL, 1, 1, true};

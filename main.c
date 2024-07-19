@@ -1,4 +1,4 @@
-#include "slimcc.h"
+#include "widcc.h"
 
 typedef enum {
   FILE_NONE, FILE_C, FILE_ASM, FILE_OBJ, FILE_AR, FILE_DSO, FILE_PP_ASM
@@ -40,7 +40,7 @@ static StringArray input_paths;
 static StringArray tmpfiles;
 
 static void usage(int status) {
-  fprintf(stderr, "slimcc [ -o <path> ] <file>\n");
+  fprintf(stderr, "widcc [ -o <path> ] <file>\n");
   exit(status);
 }
 
@@ -459,7 +459,7 @@ static void cleanup(void) {
 }
 
 static char *create_tmpfile(void) {
-  char *path = strdup("/tmp/slimcc-XXXXXX");
+  char *path = strdup("/tmp/widcc-XXXXXX");
   int fd = mkstemp(path);
   if (fd == -1)
     error("mkstemp failed: %s", strerror(errno));
@@ -563,7 +563,7 @@ static void print_dependencies(void) {
 
   for (int i = 0; files[i]; i++) {
     char *name = files[i]->name;
-    if ((opt_MMD && in_std_include_path(name)) || !strcmp(name, "slimcc_builtins"))
+    if ((opt_MMD && in_std_include_path(name)) || !strcmp(name, "widcc_builtins"))
       continue;
     fprintf(out, " \\\n  %s", name);
   }
@@ -573,7 +573,7 @@ static void print_dependencies(void) {
   if (opt_MP) {
     for (int i = 1; files[i]; i++) {
       char *name = files[i]->name;
-      if ((opt_MMD && in_std_include_path(name)) || !strcmp(name, "slimcc_builtins"))
+      if ((opt_MMD && in_std_include_path(name)) || !strcmp(name, "widcc_builtins"))
         continue;
       fprintf(out, "%s:\n\n", quote_makefile(name));
     }
@@ -593,7 +593,7 @@ static void cc1(void) {
 
   if (!opt_E) {
     Token *end;
-    head.next = tokenize(add_input_file("slimcc_builtins",
+    head.next = tokenize(add_input_file("widcc_builtins",
     "typedef struct {"
     "  unsigned int gp_offset;"
     "  unsigned int fp_offset;"

@@ -1,4 +1,4 @@
-#include "slimcc.h"
+#include "widcc.h"
 
 #define MASK(bits) (uint8_t)((1 << (bits)) - 1)
 #define MASK2(bits, shift) (uint8_t)(MASK(bits) << (shift))

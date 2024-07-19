@@ -1,4 +1,4 @@
-#include "slimcc.h"
+#include "widcc.h"
 
 // Input file
 static File *current_file;

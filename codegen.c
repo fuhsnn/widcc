@@ -1,4 +1,4 @@
-#include "slimcc.h"
+#include "widcc.h"
 
 #define GP_MAX 6
 #define FP_MAX 8

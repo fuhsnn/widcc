@@ -15,7 +15,7 @@
 // To achieve the above behavior, we lock an expanding macro until
 // the next token following its expansion ("stop_tok") is reached.
 
-#include "slimcc.h"
+#include "widcc.h"
 
 typedef struct MacroParam MacroParam;
 struct MacroParam {
@@ -1289,7 +1289,7 @@ void init_macros(void) {
   define_macro("__linux", "1");
   define_macro("__linux__", "1");
   define_macro("__signed__", "signed");
-  define_macro("__slimcc__", "1");
+  define_macro("__widcc__", "1");
   define_macro("__unix", "1");
   define_macro("__unix__", "1");
   define_macro("__volatile__", "volatile");
