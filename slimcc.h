@@ -175,6 +175,7 @@ struct Obj {
   // Local variable
   int ofs;
   Obj *param_next;
+  Obj *param_promoted;
   Obj *vla_next;
   bool pass_by_stack;
   int stack_offset;
@@ -402,8 +403,9 @@ struct Type {
   Scope *scopes;
   Type *return_ty;
   Obj *param_list;
-  Node *vla_calc;
+  Node *pre_calc;
   bool is_variadic;
+  bool is_oldstyle;
 };
 
 // Struct member
