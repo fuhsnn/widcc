@@ -3,24 +3,6 @@
 #define GP_MAX 6
 #define FP_MAX 8
 
-#define GP_SLOTS 6
-#define FP_SLOTS 6
-
-typedef enum {
-  SL_GP,
-  SL_FP,
-  SL_ST,
-} SlotKind;
-
-typedef struct {
-  SlotKind kind;
-  int gp_depth;
-  int fp_depth;
-  int st_depth;
-  int st_offset;
-  long loc;
-} Slot;
-
 static FILE *output_file;
 static char *argreg8[] = {"%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"};
 static char *argreg16[] = {"%di", "%si", "%dx", "%cx", "%r8w", "%r9w"};
