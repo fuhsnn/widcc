@@ -26,8 +26,6 @@ static char *argreg8[] = {"%dil", "%sil", "%dl", "%cl", "%r8b", "%r9b"};
 static char *argreg16[] = {"%di", "%si", "%dx", "%cx", "%r8w", "%r9w"};
 static char *argreg32[] = {"%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"};
 static char *argreg64[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
-static char *tmpreg32[] = {"%edi", "%esi", "%r8d", "%r9d", "%r10d", "%r11d"};
-static char *tmpreg64[] = {"%rdi", "%rsi", "%r8", "%r9", "%r10", "%r11"};
 
 static Obj *current_fn;
 static int va_gp_start;
@@ -35,16 +33,15 @@ static int va_fp_start;
 static int va_st_start;
 static int vla_base_ofs;
 static int rtn_ptr_ofs;
-
+static int lvar_stk_sz;
+static int peak_stk_usage;
 bool dont_reuse_stack;
 
 struct {
-  Slot *data;
-  int capacity;
+  int *data;
   int depth;
-  int bottom;
-  int base;
-} static tmp_stack;
+  int capacity;
+} static tmp_stk;
 
 static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
@@ -82,122 +79,67 @@ static int count(void) {
   return i++;
 }
 
-static void clobber_all_regs(void) {
-  for (int i = 0; i < tmp_stack.depth; i++)
-    tmp_stack.data[i].kind = SL_ST;
-}
-
-static void push_tmpstack(SlotKind kind) {
-  if (tmp_stack.depth == tmp_stack.capacity) {
-    tmp_stack.capacity += 4;
-    tmp_stack.data = realloc(tmp_stack.data, sizeof(Slot) * tmp_stack.capacity);
+static int push_tmpstack(int sz) {
+  if (tmp_stk.depth == tmp_stk.capacity) {
+    tmp_stk.capacity += 4;
+    tmp_stk.data = realloc(tmp_stk.data, sizeof(int) * tmp_stk.capacity);
   }
 
-  long loc = resrvln();
-  Slot sl = {.kind = kind, .loc = loc};
-  tmp_stack.data[tmp_stack.depth] = sl;
-  tmp_stack.depth++;
-  return;
-}
+  int offset;
+  if (dont_reuse_stack) {
+    peak_stk_usage += 8 * sz;
+    offset = peak_stk_usage;
+  } else {
+    int stk_pos;
+    if (tmp_stk.depth > 0)
+      stk_pos = tmp_stk.data[tmp_stk.depth - 1];
+    else
+      stk_pos = lvar_stk_sz;
 
-static Slot *pop_tmpstack2(int sz) {
-  tmp_stack.depth--;
-  assert(tmp_stack.depth >= 0);
-
-  Slot *sl = &tmp_stack.data[tmp_stack.depth];
-  if ((sl->kind == SL_GP && sl->gp_depth >= GP_SLOTS) ||
-    (sl->kind == SL_FP && sl->fp_depth >= FP_SLOTS))
-    sl->kind = SL_ST;
-
-  if (tmp_stack.depth > 0) {
-    Slot *sl2 = &tmp_stack.data[tmp_stack.depth - 1];
-    sl2->gp_depth = MAX(sl2->gp_depth, sl->gp_depth + (sl->kind == SL_GP));
-    sl2->fp_depth = MAX(sl2->fp_depth, sl->fp_depth + (sl->kind == SL_FP));
-    sl2->st_depth = MAX(sl2->st_depth, sl->st_depth + (sl->kind == SL_ST) * sz);
+    stk_pos += 8 * sz;
+    peak_stk_usage = MAX(peak_stk_usage, stk_pos);
+    offset = stk_pos;
   }
 
-  if (sl->kind == SL_ST) {
-    if (dont_reuse_stack) {
-      tmp_stack.bottom += sz * 8;
-      sl->st_offset = -tmp_stack.bottom;
-    } else {
-      int bottom = tmp_stack.base + (sl->st_depth + sz) * 8;
-      tmp_stack.bottom = MAX(tmp_stack.bottom, bottom);
-      sl->st_offset = -bottom;
-    }
-  }
-  return sl;
+  tmp_stk.data[tmp_stk.depth] = offset;
+  tmp_stk.depth++;
+  return offset;
 }
 
-static Slot *pop_tmpstack(void) {
-  return pop_tmpstack2(1);
+static int pop_tmpstack(void) {
+  tmp_stk.depth--;
+  return tmp_stk.data[tmp_stk.depth];
 }
 
-static void push(void) {
-  push_tmpstack(SL_GP);
-}
-
-static void pop2(Slot *sl, bool is_r64, char *arg) {
-  char *ax = is_r64 ? "%rax" : "%eax";
-
-  if (sl->kind == SL_GP) {
-    char *reg = (is_r64 ? tmpreg64 : tmpreg32)[sl->gp_depth];
-    insrtln("  mov %s, %s", sl->loc, ax, reg);
-    println("  mov %s, %s", reg, arg);
-    return;
-  }
-  insrtln("  mov %s, %d(%%rbp)", sl->loc, ax, sl->st_offset);
-  println("  mov %d(%%rbp), %s", sl->st_offset, arg);
+static int push(void) {
+  int offset = push_tmpstack(1);
+  println("  mov %%rax, -%d(%%rbp)", offset);
+  return offset;
 }
 
 static void pop(char *arg) {
-  Slot *sl = pop_tmpstack();
-  pop2(sl, true, arg);
-}
-
-static char *pop_inreg2(bool is_r64, char *fallback_reg) {
-  Slot *sl = pop_tmpstack();
-
-  if (sl->kind == SL_GP) {
-    char *ax = is_r64 ? "%rax" : "%eax";
-    char *reg = (is_r64 ? tmpreg64 : tmpreg32)[sl->gp_depth];
-    insrtln("  mov %s, %s", sl->loc, ax, reg);
-    return reg;
-  }
-  pop2(sl, is_r64, fallback_reg);
-  return fallback_reg;
-}
-
-static char *pop_inreg(char *fallback_reg) {
-  return pop_inreg2(true, fallback_reg);
+  int offset = pop_tmpstack();
+  println("  mov -%d(%%rbp), %s", offset, arg);
 }
 
 static void pushf(void) {
-  push_tmpstack(SL_FP);
+  int offset = push_tmpstack(1);
+  println("  movsd %%xmm0, -%d(%%rbp)", offset);
 }
 
-static int popf_inreg(bool is_xmm64) {
-  Slot *sl = pop_tmpstack();
-  char *mv = is_xmm64 ? "movsd" : "movss";
-
-  if (sl->kind == SL_FP) {
-    insrtln("  %s %%xmm0, %%xmm%d", sl->loc, mv, sl->fp_depth + 2);
-    return sl->fp_depth + 2;
-  }
-  insrtln("  %s %%xmm0, %d(%%rbp)", sl->loc, mv, sl->st_offset);
-  println("  %s %d(%%rbp), %%xmm1", mv, sl->st_offset);
-  return 1;
+static void popf(char *reg) {
+  int offset = pop_tmpstack();
+  println("  movsd -%d(%%rbp), %%xmm1", offset);
 }
 
 static void push_x87(void) {
-  push_tmpstack(SL_ST);
+  int offset = push_tmpstack(2);
+  println("  fstpt -%d(%%rbp)", offset);
 }
 
-static bool pop_x87(void) {
-  Slot *sl = pop_tmpstack2(2);
-  insrtln("  fstpt %d(%%rbp)", sl->loc, sl->st_offset);
-  println("  fldt %d(%%rbp)", sl->st_offset);
-  return true;
+static void pop_x87(void) {
+  int offset = pop_tmpstack();
+  println("  fldt -%d(%%rbp)", offset);
 }
 
 // When we load a char or a short value to a register, we always
@@ -296,7 +238,6 @@ static void gen_addr(Node *node) {
     if (opt_fpic) {
       // Thread-local variable
       if (node->var->is_tls) {
-        clobber_all_regs();
         println("  data16 lea \"%s\"@tlsgd(%%rip), %%rdi", node->var->name);
         println("  .value 0x6666");
         println("  rex64");
@@ -414,33 +355,32 @@ static void load(Type *ty) {
 
 // Store %rax to an address that the stack top is pointing to.
 static void store(Type *ty) {
-  char *reg = pop_inreg("%rcx");
+  pop("%rcx");
 
   switch (ty->kind) {
   case TY_STRUCT:
   case TY_UNION:
-    gen_mem_copy(0, "%rax", 0, reg, ty->size);
+    gen_mem_copy(0, "%rax", 0, "%rcx", ty->size);
     return;
   case TY_FLOAT:
-    println("  movss %%xmm0, (%s)", reg);
+    println("  movss %%xmm0, (%%rcx)");
     return;
   case TY_DOUBLE:
-    println("  movsd %%xmm0, (%s)", reg);
+    println("  movsd %%xmm0, (%%rcx)");
     return;
   case TY_LDOUBLE:
-    println("  fstpt (%s)", reg);
-    println("  fldt (%s)", reg);
+    println("  fstpt (%%rcx)");
+    println("  fldt (%%rcx)");
     return;
   }
 
-  if (ty->size == 1)
-    println("  mov %%al, (%s)", reg);
-  else if (ty->size == 2)
-    println("  mov %%ax, (%s)", reg);
-  else if (ty->size == 4)
-    println("  mov %%eax, (%s)", reg);
-  else
-    println("  mov %%rax, (%s)", reg);
+  switch (ty->size) {
+  case 1:  println("  mov %%al, (%%rcx)"); return;
+  case 2:  println("  mov %%ax, (%%rcx)"); return;
+  case 4:  println("  mov %%eax, (%%rcx)"); return;
+  case 8:  println("  mov %%rax, (%%rcx)"); return;
+  }
+  internal_error();
 }
 
 static void cmp_zero(Type *ty) {
@@ -989,23 +929,23 @@ static void gen_expr(Node *node) {
       // If the lhs is a bitfield, we need to read the current value
       // from memory and merge it with a new value.
       Member *mem = node->lhs->member;
-      println("  mov $%ld, %%rdx", (1L << mem->bit_width) - 1);
-      println("  and %%rdx, %%rax");
-      println("  mov %%rax, %%rcx");
+      println("  mov $%ld, %%rcx", (1L << mem->bit_width) - 1);
+      println("  and %%rcx, %%rax");
+      println("  mov %%rax, %%rdx");
 
       pop("%rax");
       push();
       load(mem->ty);
 
       long mask = ((1L << mem->bit_width) - 1) << mem->bit_offset;
-      println("  mov $%ld, %%rdx", ~mask);
-      println("  and %%rdx, %%rax");
+      println("  mov $%ld, %%rcx", ~mask);
+      println("  and %%rcx, %%rax");
 
-      println("  mov %%rcx, %%rdx");
-      println("  shl $%d, %%rdx", mem->bit_offset);
-      println("  or %%rdx, %%rax");
+      println("  mov %%rdx, %%rcx");
+      println("  shl $%d, %%rcx", mem->bit_offset);
+      println("  or %%rcx, %%rax");
       store(node->ty);
-      println("  mov %%rcx, %%rax");
+      println("  mov %%rdx, %%rax");
 
       if (!mem->ty->is_unsigned) {
         println("  shl $%d, %%rax", 64 - mem->bit_width);
@@ -1099,7 +1039,6 @@ static void gen_expr(Node *node) {
       gen_expr(node->args_expr);
 
     pop("%r10");
-    clobber_all_regs();
 
     // If the return type is a large struct/union, the caller passes
     // a pointer to a buffer as if it were the first argument.
@@ -1136,7 +1075,6 @@ static void gen_expr(Node *node) {
       copy_ret_buffer(node->ret_buffer);
       println("  lea %d(%%rbp), %%rax", node->ret_buffer->ofs);
     }
-
     return;
   }
   case ND_LABEL_VAL:
@@ -1160,8 +1098,8 @@ static void gen_expr(Node *node) {
     gen_expr(node->lhs);
     push();
     gen_expr(node->rhs);
-    char *reg = pop_inreg("%rcx");
-    gen_mem_copy(0, "%rax", 0, reg, 24);
+    pop("%rcx");
+    gen_mem_copy(0, "%rax", 0, "%rcx", 24);
     return;
   }
   case ND_VA_ARG: {
@@ -1221,30 +1159,29 @@ static void gen_expr(Node *node) {
     pushf();
     gen_expr(node->rhs);
 
-    bool is_xmm64 = node->lhs->ty->kind == TY_DOUBLE;
-    int reg = popf_inreg(is_xmm64);
-    char *sz = is_xmm64 ? "sd" : "ss";
+    char *sz = (node->lhs->ty->kind == TY_DOUBLE) ? "sd" : "ss";
+    popf(sz);
 
     switch (node->kind) {
     case ND_ADD:
-      println("  add%s %%xmm%d, %%xmm0", sz, reg);
+      println("  add%s %%xmm1, %%xmm0", sz);
       return;
     case ND_SUB:
-      println("  sub%s %%xmm0, %%xmm%d", sz, reg);
-      println("  movaps %%xmm%d, %%xmm0", reg);
+      println("  sub%s %%xmm0, %%xmm1", sz);
+      println("  movaps %%xmm1, %%xmm0");
       return;
     case ND_MUL:
-      println("  mul%s %%xmm%d, %%xmm0", sz, reg);
+      println("  mul%s %%xmm1, %%xmm0", sz);
       return;
     case ND_DIV:
-      println("  div%s %%xmm0, %%xmm%d", sz, reg);
-      println("  movaps %%xmm%d, %%xmm0", reg);
+      println("  div%s %%xmm0, %%xmm1", sz);
+      println("  movaps %%xmm1, %%xmm0");
       return;
     case ND_EQ:
     case ND_NE:
     case ND_LT:
     case ND_LE:
-      println("  ucomi%s %%xmm%d, %%xmm0", sz, reg);
+      println("  ucomi%s %%xmm1, %%xmm0", sz);
 
       if (node->kind == ND_EQ) {
         println("  sete %%al");
@@ -1323,8 +1260,8 @@ static void gen_expr(Node *node) {
 
   bool is_r64 = node->lhs->ty->size == 8 || node->lhs->ty->base;
   char *ax = is_r64 ? "%rax" : "%eax";
-  char *cx = is_r64 ? "%rcx" : "%ecx";
-  char *op = pop_inreg2(is_r64, cx);
+  char *op = is_r64 ? "%rcx" : "%ecx";
+  pop("%rcx");
 
   switch (node->kind) {
   case ND_ADD:
@@ -1712,7 +1649,8 @@ static void emit_text(Obj *prog) {
       println("  mov %s, -%d(%%rbp)", argreg64[0], rtn_ptr_ofs);
     }
 
-    tmp_stack.base = tmp_stack.bottom = assign_lvar_offsets(fn->ty->scopes, lvar_stack);
+    lvar_stk_sz = assign_lvar_offsets(fn->ty->scopes, lvar_stack);
+    peak_stk_usage = lvar_stk_sz = align_to(lvar_stk_sz, 8);
 
     // Save passed-by-register arguments to the stack
     int gp = rtn_by_stk, fp = 0;
@@ -1749,9 +1687,9 @@ static void emit_text(Obj *prog) {
 
     // Emit code
     gen_stmt(fn->body);
-    assert(tmp_stack.depth == 0);
+    assert(tmp_stk.depth == 0);
 
-    insrtln("  sub $%d, %%rsp", stack_alloc_loc, align_to(tmp_stack.bottom, 16));
+    insrtln("  sub $%d, %%rsp", stack_alloc_loc, align_to(peak_stk_usage, 16));
 
     // [https://www.sigbus.info/n1570#5.1.2.2.3p1] The C spec defines
     // a special rule for the main function. Reaching the end of the
