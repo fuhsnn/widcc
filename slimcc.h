@@ -174,7 +174,6 @@ struct Obj {
 
   // Local variable
   int ofs;
-  char *ptr;
   Obj *param_next;
   Obj *vla_next;
   bool pass_by_stack;
