@@ -100,7 +100,7 @@ static void push_tmpstack(SlotKind kind) {
   return;
 }
 
-static Slot *pop_tmpstack(void) {
+static Slot *pop_tmpstack2(int sz) {
   tmp_stack.depth--;
   assert(tmp_stack.depth >= 0);
 
@@ -113,20 +113,24 @@ static Slot *pop_tmpstack(void) {
     Slot *sl2 = &tmp_stack.data[tmp_stack.depth - 1];
     sl2->gp_depth = MAX(sl2->gp_depth, sl->gp_depth + (sl->kind == SL_GP));
     sl2->fp_depth = MAX(sl2->fp_depth, sl->fp_depth + (sl->kind == SL_FP));
-    sl2->st_depth = MAX(sl2->st_depth, sl->st_depth + (sl->kind == SL_ST));
+    sl2->st_depth = MAX(sl2->st_depth, sl->st_depth + (sl->kind == SL_ST) * sz);
   }
 
   if (sl->kind == SL_ST) {
     if (dont_reuse_stack) {
-      tmp_stack.bottom += 8;
+      tmp_stack.bottom += sz * 8;
       sl->st_offset = -tmp_stack.bottom;
     } else {
-      int bottom = tmp_stack.base + (sl->st_depth + 1) * 8;
+      int bottom = tmp_stack.base + (sl->st_depth + sz) * 8;
       tmp_stack.bottom = MAX(tmp_stack.bottom, bottom);
       sl->st_offset = -bottom;
     }
   }
   return sl;
+}
+
+static Slot *pop_tmpstack(void) {
+  return pop_tmpstack2(1);
 }
 
 static void push(void) {
@@ -193,6 +197,17 @@ static int popf_inreg(bool is_xmm64) {
   insrtln("  %s %%xmm0, %d(%%rbp)", sl->loc, mv, sl->st_offset);
   println("  %s %d(%%rbp), %%xmm1", mv, sl->st_offset);
   return 1;
+}
+
+static void push_x87(void) {
+  push_tmpstack(SL_ST);
+}
+
+static bool pop_x87(void) {
+  Slot *sl = pop_tmpstack2(2);
+  insrtln("  fstpt %d(%%rbp)", sl->loc, sl->st_offset);
+  println("  fldt %d(%%rbp)", sl->st_offset);
+  return true;
 }
 
 // When we load a char or a short value to a register, we always
@@ -400,7 +415,7 @@ static void load(Type *ty) {
     println("  movsd (%%rax), %%xmm0");
     return;
   case TY_LDOUBLE:
-    println("  fldt (%%rax)");
+    println("  fninit; fldt (%%rax)");
     return;
   }
 
@@ -425,6 +440,7 @@ static void store(Type *ty) {
     return;
   case TY_LDOUBLE:
     println("  fstpt (%s)", reg);
+    println("  fldt (%s)", reg);
     return;
   }
 
@@ -911,11 +927,12 @@ static void gen_expr(Node *node) {
       union { long double f80; uint64_t u64[2]; } u;
       memset(&u, 0, sizeof(u));
       u.f80 = node->fval;
-      println("  mov $%lu, %%rax  # long double %Lf", u.u64[0], node->fval);
-      println("  mov %%rax, -16(%%rsp)");
-      println("  mov $%lu, %%rax", u.u64[1]);
-      println("  mov %%rax, -8(%%rsp)");
-      println("  fldt -16(%%rsp)");
+      println("  movq $%lu, %%rax", u.u64[0]);
+      println("  movw $%lu, %%dx", u.u64[1]);
+      println("  push %%rdx");
+      println("  push %%rax");
+      println("  fninit; fldt (%%rsp)");
+      println("  add $16, %%rsp");
       return;
     }
     }
@@ -1295,25 +1312,30 @@ static void gen_expr(Node *node) {
   }
   case TY_LDOUBLE: {
     gen_expr(node->lhs);
+    push_x87();
     gen_expr(node->rhs);
+    pop_x87();
 
     switch (node->kind) {
     case ND_ADD:
       println("  faddp");
       return;
     case ND_SUB:
-      println("  fsubrp");
+      println("  fsubp");
       return;
     case ND_MUL:
       println("  fmulp");
       return;
     case ND_DIV:
-      println("  fdivrp");
+      println("  fdivp");
       return;
     case ND_EQ:
     case ND_NE:
     case ND_LT:
     case ND_LE:
+      if (node->kind == ND_LT || node->kind == ND_LE)
+        println("  fxch %%st(1)");
+
       println("  fucomip");
       println("  fstp %%st(0)");
 
