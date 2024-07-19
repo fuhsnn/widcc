@@ -82,7 +82,7 @@ static int count(void) {
   return i++;
 }
 
-static void save_tmp_regs(void) {
+static void clobber_all_regs(void) {
   for (int i = 0; i < tmp_stack.depth; i++)
     tmp_stack.data[i].kind = SL_ST;
 }
@@ -291,7 +291,7 @@ static void gen_addr(Node *node) {
     if (opt_fpic) {
       // Thread-local variable
       if (node->var->is_tls) {
-        save_tmp_regs();
+        clobber_all_regs();
         println("  data16 lea \"%s\"@tlsgd(%%rip), %%rdi", node->var->name);
         println("  .value 0x6666");
         println("  rex64");
@@ -639,10 +639,9 @@ static bool has_flonum2(Type *ty) {
   return has_flonum(ty, 8, 16, 0);
 }
 
-static int calling_convention(Obj *var, int gp_start, int *gp_count, int *fp_count, int *stack_align) {
+static int calling_convention(Obj *var, int *gp_count, int *fp_count) {
   int stack = 0;
-  int max_align = 16;
-  int gp = gp_start, fp = 0;
+  int gp = *gp_count, fp = 0;
   for (; var; var = var->param_next) {
     Type *ty = var->ty;
     assert(ty->size != 0);
@@ -675,10 +674,9 @@ static int calling_convention(Obj *var, int gp_start, int *gp_count, int *fp_cou
     }
     var->pass_by_stack = true;
 
-    if (ty->align > 8) {
+    if (ty->align > 8)
       stack = align_to(stack, ty->align);
-      max_align = MAX(max_align, ty->align);
-    }
+
     var->stack_offset = stack;
     stack += align_to(ty->size, 8);
   }
@@ -686,9 +684,6 @@ static int calling_convention(Obj *var, int gp_start, int *gp_count, int *fp_cou
     *gp_count = MIN(gp, GP_MAX);
   if (fp_count)
     *fp_count = MIN(fp, FP_MAX);
-  if (stack_align)
-    *stack_align = max_align;
-
   return stack;
 }
 
@@ -733,11 +728,11 @@ static void place_stack_args(Node *node) {
   }
 }
 
-static void place_reg_args(Node *node, bool gp_start) {
+static void place_reg_args(Node *node, bool return_by_stack) {
   int gp = 0, fp = 0;
   // If the return type is a large struct/union, the caller passes
   // a pointer to a buffer as if it were the first argument.
-  if (gp_start)
+  if (return_by_stack)
     println("  lea %d(%%rbp), %s", node->ret_buffer->ofs, argreg64[gp++]);
 
   for (Obj *var = node->args; var; var = var->param_next) {
@@ -1098,31 +1093,26 @@ static void gen_expr(Node *node) {
       gen_expr(node->args_expr);
 
     pop("%r10");
-
-    println("  mov %%rsp, %%rax");
-    push();
-
-    save_tmp_regs();
+    clobber_all_regs();
 
     // If the return type is a large struct/union, the caller passes
     // a pointer to a buffer as if it were the first argument.
-    bool gp_start = node->ret_buffer && node->ty->size > 16;
+    bool rtn_by_stk = node->ret_buffer && node->ty->size > 16;
+    int gp_count = rtn_by_stk;
+    int fp_count = 0;
+    int arg_stk_size = calling_convention(node->args, &gp_count, &fp_count);
 
-    int fp_count, stack_align;
-    int args_size = calling_convention(node->args, gp_start, NULL, &fp_count, &stack_align);
-
-    println("  sub $%d, %%rsp", args_size);
-    println("  and $-%d, %%rsp", stack_align);
+    println("  sub $%d, %%rsp", align_to(arg_stk_size, 16));
 
     place_stack_args(node);
-    place_reg_args(node, gp_start);
+    place_reg_args(node, rtn_by_stk);
 
     if (node->lhs->ty->is_variadic)
       println("  movl $%d, %%eax", fp_count);
 
     println("  call *%%r10");
 
-    pop("%rsp");
+    println("  add $%d, %%rsp", align_to(arg_stk_size, 16));
 
     // It looks like the most significant 48 or 56 bits in RAX may
     // contain garbage if a function return type is short or bool/char,
@@ -1686,9 +1676,11 @@ static void emit_text(Obj *prog) {
       println("  .text");
     println("  .type \"%s\", @function", fn->name);
     println("\"%s\":", fn->name);
-    bool large_rtn = fn->ty->return_ty->size > 16;
-    int gp_count, fp_count;
-    int args_size = calling_convention(fn->ty->param_list, large_rtn, &gp_count, &fp_count, NULL);
+
+    bool rtn_by_stk= fn->ty->return_ty->size > 16;
+    int gp_count = rtn_by_stk;
+    int fp_count = 0;
+    int arg_stk_size = calling_convention(fn->ty->param_list, &gp_count, &fp_count);
 
     current_fn = fn;
 
@@ -1704,7 +1696,7 @@ static void emit_text(Obj *prog) {
     if (fn->ty->is_variadic) {
       va_gp_start = gp_count * 8;
       va_fp_start = fp_count * 16 + 48;
-      va_st_start = args_size + 16;
+      va_st_start = arg_stk_size + 16;
       lvar_stack = 176;
 
       switch (gp_count) {
@@ -1737,7 +1729,7 @@ static void emit_text(Obj *prog) {
       println("  mov %%rsp, -%d(%%rbp)", vla_base_ofs);
     }
 
-    if (large_rtn) {
+    if (rtn_by_stk) {
       rtn_ptr_ofs = lvar_stack += 8;
       println("  mov %s, -%d(%%rbp)", argreg64[0], rtn_ptr_ofs);
     }
@@ -1745,7 +1737,7 @@ static void emit_text(Obj *prog) {
     tmp_stack.base = tmp_stack.bottom = assign_lvar_offsets(fn->ty->scopes, lvar_stack);
 
     // Save passed-by-register arguments to the stack
-    int gp = large_rtn, fp = 0;
+    int gp = rtn_by_stk, fp = 0;
     for (Obj *var = fn->ty->param_list; var; var = var->param_next) {
       if (var->pass_by_stack)
         continue;
