@@ -868,6 +868,8 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
 
       // static local variable
       Obj *var = new_anon_gvar(ty);
+      var->is_tls = attr->is_tls;
+
       push_scope(get_ident(name))->var = var;
 
       if (equal(tok, "="))
