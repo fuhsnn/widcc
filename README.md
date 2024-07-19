@@ -18,3 +18,53 @@ cd widcc
 make test-stage2 -j
 ```
 Run it in base directory like `CC=~/widcc/widcc`
+
+# Building real-world projects
+
+(package dependencies are assumed to be in place)
+
+`curl 8.8.0`
+```
+git clone --depth 1 https://github.com/curl/curl --branch curl-8_8_0
+mkdir curl/cmakebuild
+cd curl/cmakebuild
+cmake ../ -DCMAKE_C_COMPILER=/full/path/to/widcc -DCMAKE_C_FLAGS=-fPIC
+make -j
+make quiet-test -j
+```
+`git 2.45.2`
+```
+git clone --depth 1 https://github.com/git/git --branch v2.45.2
+cd git
+make CC=~/widcc/widcc V=1 test -j
+```
+`PostgreSQL 15.7`
+```
+git clone --depth 1 https://github.com/postgres/postgres --branch REL_15_7
+cd postgres
+CC=~/widcc/widcc ./configure --disable-spinlocks --disable-atomics
+make check -j
+```
+`Python 3.11.9`
+```
+git clone --depth 1 https://github.com/python/cpython --branch v3.11.9
+cd cpython
+CC=~/widcc/widcc ./configure
+make test -j
+```
+`sqlite 3.46.0`
+```
+git clone --depth 1 https://github.com/sqlite/sqlite/ --branch version-3.46.0
+cd sqlite
+sh ~/widcc/add_wl_pic.sh ./configure
+CC=~/widcc/widcc CFLAGS=-D_GNU_SOURCE ./configure
+make testrunner
+```
+`vim trunk`
+```
+git clone --depth 1 https://github.com/vim/vim
+cd vim
+CC=~/widcc/widcc ./configure
+make -j
+make testtiny
+```
