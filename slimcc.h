@@ -259,8 +259,6 @@ typedef enum {
   ND_CAST,      // Type cast
   ND_MEMZERO,   // Zero-clear a stack variable
   ND_ASM,       // "asm"
-  ND_CAS,       // Atomic compare-and-swap
-  ND_EXCH,      // Atomic exchange
   ND_VA_START,  // "va_start"
   ND_VA_COPY,   // "va_copy"
   ND_VA_ARG,    // "va_arg"
@@ -319,11 +317,6 @@ struct Node {
   // "asm" string literal
   char *asm_str;
 
-  // Atomic compare-and-swap
-  Node *cas_addr;
-  Node *cas_old;
-  Node *cas_new;
-
   // Variable
   Obj *var;
 
@@ -381,7 +374,6 @@ struct Type {
   int size;           // sizeof() value
   int align;          // alignment
   bool is_unsigned;   // unsigned or signed
-  bool is_atomic;     // true if _Atomic
   Type *origin;       // for type compatibility check
 
   // Pointer-to or array-of type. We intentionally use the same member

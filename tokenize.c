@@ -170,7 +170,7 @@ bool is_keyword(Token *tok) {
       "default", "extern", "_Alignof", "do", "signed",
       "unsigned", "const", "volatile", "auto", "register", "restrict",
       "__restrict", "__restrict__", "_Noreturn", "float", "double",
-      "_Thread_local", "__thread", "_Atomic", "__attribute__",
+      "_Thread_local", "__thread", "__attribute__",
       "__asm", "__asm__", "__typeof", "__typeof__", "inline",
     };
 

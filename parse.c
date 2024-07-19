@@ -412,7 +412,6 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
 
   Type *ty = ty_int;
   int counter = 0;
-  bool is_atomic = false;
 
   while (is_typename(tok)) {
     // Handle storage class specifiers.
@@ -446,16 +445,6 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         consume(&tok, tok, "restrict") || consume(&tok, tok, "__restrict") ||
         consume(&tok, tok, "__restrict__") || consume(&tok, tok, "_Noreturn"))
       continue;
-
-    if (equal(tok, "_Atomic")) {
-      tok = tok->next;
-      if (equal(tok , "(")) {
-        ty = typename(&tok, tok->next);
-        tok = skip(tok, ")");
-      }
-      is_atomic = true;
-      continue;
-    }
 
     // Handle user-defined types.
     Type *ty2 = find_typedef(tok);
@@ -575,12 +564,6 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
 
     tok = tok->next;
   }
-
-  if (is_atomic) {
-    ty = copy_type(ty);
-    ty->is_atomic = true;
-  }
-
   *rest = tok;
   return ty;
 }
@@ -1502,7 +1485,7 @@ static bool is_typename(Token *tok) {
       "typedef", "enum", "static", "extern", "signed", "unsigned",
       "const", "volatile", "auto", "register", "restrict", "__restrict",
       "__restrict__", "_Noreturn", "float", "double", "inline",
-      "_Thread_local", "__thread", "_Atomic", "__typeof", "__typeof__"
+      "_Thread_local", "__thread", "__typeof", "__typeof__"
     };
 
     for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
@@ -2177,68 +2160,6 @@ static Node *to_assign(Node *binary) {
     return new_binary(ND_CHAIN, expr1, expr4, tok);
   }
 
-  // If A is an atomic type, Convert `A op= B` to
-  //
-  // ({
-  //   T1 *addr = &A; T2 val = (B); T1 old = *addr; T1 new;
-  //   do {
-  //    new = old op val;
-  //   } while (!atomic_compare_exchange_strong(addr, &old, new));
-  //   new;
-  // })
-  if (binary->lhs->ty->is_atomic) {
-    Node head = {0};
-    Node *cur = &head;
-
-    Obj *addr = new_lvar(NULL, pointer_to(binary->lhs->ty));
-    Obj *val = new_lvar(NULL, binary->rhs->ty);
-    Obj *old = new_lvar(NULL, binary->lhs->ty);
-    Obj *new = new_lvar(NULL, binary->lhs->ty);
-
-    cur = cur->next =
-      new_unary(ND_EXPR_STMT,
-                new_binary(ND_ASSIGN, new_var_node(addr, tok),
-                           new_unary(ND_ADDR, binary->lhs, tok), tok),
-                tok);
-
-    cur = cur->next =
-      new_unary(ND_EXPR_STMT,
-                new_binary(ND_ASSIGN, new_var_node(val, tok), binary->rhs, tok),
-                tok);
-
-    cur = cur->next =
-      new_unary(ND_EXPR_STMT,
-                new_binary(ND_ASSIGN, new_var_node(old, tok),
-                           new_unary(ND_DEREF, new_var_node(addr, tok), tok), tok),
-                tok);
-
-    Node *loop = new_node(ND_DO, tok);
-    loop->brk_label = new_unique_name();
-    loop->cont_label = new_unique_name();
-
-    Node *body = new_binary(ND_ASSIGN,
-                            new_var_node(new, tok),
-                            new_binary(binary->kind, new_var_node(old, tok),
-                                       new_var_node(val, tok), tok),
-                            tok);
-
-    loop->then = new_node(ND_BLOCK, tok);
-    loop->then->body = new_unary(ND_EXPR_STMT, body, tok);
-
-    Node *cas = new_node(ND_CAS, tok);
-    cas->cas_addr = new_var_node(addr, tok);
-    cas->cas_old = new_unary(ND_ADDR, new_var_node(old, tok), tok);
-    cas->cas_new = new_var_node(new, tok);
-    loop->cond = new_unary(ND_NOT, cas, tok);
-
-    cur = cur->next = loop;
-    cur = cur->next = new_unary(ND_EXPR_STMT, new_var_node(new, tok), tok);
-
-    Node *node = new_node(ND_STMT_EXPR, tok);
-    node->body = head.next;
-    return node;
-  }
-
   // Convert `A op= B` to ``tmp = &A, *tmp = *tmp op B`.
   Obj *var = new_lvar(NULL, pointer_to(binary->lhs->ty));
 
@@ -2263,19 +2184,6 @@ static Node *to_assign(Node *binary) {
 static Node *assign(Token **rest, Token *tok) {
   Node *node = conditional(&tok, tok);
   add_type(node);
-
-  // Convert A = B to (tmp = B, atomic_exchange(&A, tmp), tmp)
-  if (equal(tok, "=") && node->ty->is_atomic) {
-    Node *rhs = assign(rest, tok->next);
-    add_type(rhs);
-    Obj *tmp = new_lvar(NULL, rhs->ty);
-    Node *expr = new_binary(ND_ASSIGN, new_var_node(tmp, tok), rhs, tok);
-    chain_expr(&expr, new_binary(ND_EXCH, new_unary(ND_ADDR, node, tok),
-                                          new_var_node(tmp, tok),
-                                          tok));
-    chain_expr(&expr, new_var_node(tmp, tok));
-    return expr;
-  }
 
   if (equal(tok, "="))
     return new_binary(ND_ASSIGN, node, assign(rest, tok->next), tok);
@@ -3302,28 +3210,6 @@ static Node *primary(Token **rest, Token *tok) {
     node->var = new_lvar(NULL, typename(&tok, tok));
     node->ty = node->var->ty;
     chain_expr(&node, new_var_node(node->var, tok));
-    *rest = skip(tok, ")");
-    return node;
-  }
-
-  if (equal(tok, "__builtin_compare_and_swap")) {
-    Node *node = new_node(ND_CAS, tok);
-    tok = skip(tok->next, "(");
-    node->cas_addr = assign(&tok, tok);
-    tok = skip(tok, ",");
-    node->cas_old = assign(&tok, tok);
-    tok = skip(tok, ",");
-    node->cas_new = assign(&tok, tok);
-    *rest = skip(tok, ")");
-    return node;
-  }
-
-  if (equal(tok, "__builtin_atomic_exchange")) {
-    Node *node = new_node(ND_EXCH, tok);
-    tok = skip(tok->next, "(");
-    node->lhs = assign(&tok, tok);
-    tok = skip(tok, ",");
-    node->rhs = assign(&tok, tok);
     *rest = skip(tok, ")");
     return node;
   }

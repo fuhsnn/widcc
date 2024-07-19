@@ -155,16 +155,6 @@ static void pop(char *arg) {
   pop2(sl, true, arg);
 }
 
-static char *req_gp(char **regtbl, int i) {
-  assert(i + 1 <= GP_SLOTS);
-
-  if (tmp_stack.depth > 0) {
-    Slot *sl = &tmp_stack.data[tmp_stack.depth - 1];
-    sl->gp_depth = MAX(sl->gp_depth, i + 1);
-  }
-  return regtbl[i];
-}
-
 static char *pop_inreg2(bool is_r64, char *fallback_reg) {
   Slot *sl = pop_tmpstack();
 
@@ -1152,39 +1142,6 @@ static void gen_expr(Node *node) {
   case ND_LABEL_VAL:
     println("  lea %s(%%rip), %%rax", node->unique_label);
     return;
-  case ND_CAS: {
-    gen_expr(node->cas_addr);
-    push();
-    gen_expr(node->cas_old);
-    push();
-    gen_expr(node->cas_new);
-    int sz = node->cas_addr->ty->base->size;
-    println("  mov %s, %s", reg_ax(sz), reg_dx(sz));
-    pop("%rax"); // old
-    pop("%rcx"); // addr
-
-    char *r0 = req_gp(tmpreg64, 0);
-    println("  mov %%rax, %s", r0);
-    load(node->cas_old->ty->base);
-
-    println("  lock cmpxchg %s, (%%rcx)", reg_dx(sz));
-    println("  sete %%cl");
-    println("  je 1f");
-    println("  mov %s, (%s)", reg_ax(sz), r0);
-    println("1:");
-    println("  movzbl %%cl, %%eax");
-    return;
-  }
-  case ND_EXCH: {
-    gen_expr(node->lhs);
-    push();
-    gen_expr(node->rhs);
-    char *reg = pop_inreg("%rcx");
-
-    int sz = node->lhs->ty->base->size;
-    println("  xchg %s, (%s)", reg_ax(sz), reg);
-    return;
-  }
   case ND_ALLOCA:
     gen_expr(node->lhs);
     builtin_alloca(node);
