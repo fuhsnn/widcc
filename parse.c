@@ -2977,56 +2977,11 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
   return node;
 }
 
-// generic-selection = "(" assign "," generic-assoc ("," generic-assoc)* ")"
-//
-// generic-assoc = type-name ":" assign
-//               | "default" ":" assign
-static Node *generic_selection(Token **rest, Token *tok) {
-  Token *start = tok;
-  tok = skip(tok, "(");
-
-  Node *ctrl = assign(&tok, tok);
-  add_type(ctrl);
-
-  Type *t1 = ctrl->ty;
-  if (t1->kind == TY_FUNC)
-    t1 = pointer_to(t1);
-  else if (t1->kind == TY_ARRAY || t1->kind == TY_VLA)
-    t1 = pointer_to(t1->base);
-
-  Node *ret = NULL;
-
-  while (comma_list(rest, &tok, ")", true)) {
-    if (equal(tok, "default")) {
-      tok = skip(tok->next, ":");
-      Node *node = assign(&tok, tok);
-      if (!ret)
-        ret = node;
-      continue;
-    }
-
-    Type *t2 = typename(&tok, tok);
-    if (t2->kind == TY_FUNC)
-      error_tok(tok, "association has function type");
-    tok = skip(tok, ":");
-    Node *node = assign(&tok, tok);
-    if (is_compatible(t1, t2))
-      ret = node;
-  }
-
-  if (!ret)
-    error_tok(start, "controlling expression type not compatible with"
-              " any generic association type");
-  return ret;
-}
-
 // primary = "(" "{" stmt+ "}" ")"
 //         | "(" expr ")"
 //         | "sizeof" "(" type-name ")"
 //         | "sizeof" unary
 //         | "_Alignof" "(" type-name ")"
-//         | "_Generic" generic-selection
-//         | "__builtin_types_compatible_p" "(" type-name, type-name, ")"
 //         | ident
 //         | str
 //         | num
@@ -3114,9 +3069,6 @@ static Node *primary(Token **rest, Token *tok) {
     return new_ulong(ty->align, tok);
   }
 
-  if (equal(tok, "_Generic"))
-    return generic_selection(rest, tok->next);
-
   if (equal(tok, "__builtin_alloca")) {
     Node *node = new_node(ND_ALLOCA, tok);
     tok = skip(tok->next, "(");
@@ -3160,15 +3112,6 @@ static Node *primary(Token **rest, Token *tok) {
     if (!node)
       return new_ulong(offset, tok);
     return new_binary(ND_ADD, node, new_ulong(offset, tok), tok);
-  }
-
-  if (equal(tok, "__builtin_types_compatible_p")) {
-    tok = skip(tok->next, "(");
-    Type *t1 = typename(&tok, tok);
-    tok = skip(tok, ",");
-    Type *t2 = typename(&tok, tok);
-    *rest = skip(tok, ")");
-    return new_num(is_compatible(t1, t2), start);
   }
 
   if (equal(tok, "__builtin_va_start")) {

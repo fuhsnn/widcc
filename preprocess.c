@@ -1226,7 +1226,6 @@ static Token *has_builtin_macro(Token *start) {
 
   bool has_it = equal(tok, "__builtin_alloca") ||
     equal(tok, "__builtin_offsetof") ||
-    equal(tok, "__builtin_types_compatible_p") ||
     equal(tok, "__builtin_va_start") ||
     equal(tok, "__builtin_va_copy") ||
     equal(tok, "__builtin_va_end") ||

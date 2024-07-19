@@ -9,11 +9,6 @@ char32_t str32[] = ((U"foobar"));
 wchar_t strw[] = {((L"foobar"))};
 
 int main(void){
-  ASSERT(1, _Generic( str, char *: 1));
-  ASSERT(1, _Generic( str16, char16_t *: 1));
-  ASSERT(1, _Generic( str32, char32_t *: 1));
-  ASSERT(1, _Generic( strw, wchar_t *: 1));
-
   ASSERT(7 * sizeof(char), sizeof(str));
   ASSERT(7 * sizeof(char16_t), sizeof(str16));
   ASSERT(7 * sizeof(char32_t), sizeof(str32));
