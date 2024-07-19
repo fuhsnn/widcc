@@ -427,7 +427,6 @@ static void store(Type *ty) {
   char *reg = pop_inreg("%rcx");
 
   switch (ty->kind) {
-  case TY_ARRAY:
   case TY_STRUCT:
   case TY_UNION:
     gen_mem_copy(0, "%rax", 0, reg, ty->size);

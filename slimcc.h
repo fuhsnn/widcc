@@ -190,9 +190,6 @@ struct Obj {
   char *init_data;
   Relocation *rel;
 
-  // constexpr variable
-  char *constexpr_data;
-
   // Function
   bool is_inline;
   bool dealloc_vla;

@@ -34,7 +34,6 @@ typedef struct {
   bool is_extern;
   bool is_inline;
   bool is_tls;
-  bool is_constexpr;
 } VarAttr;
 
 // This struct represents a variable initializer. Since initializers
@@ -66,17 +65,6 @@ struct InitDesg {
   Member *member;
   Obj *var;
 };
-
-typedef enum {
-  EV_CONST = 0, // constant expression
-  EV_LABEL,     // relocation label
-  EV_AGG,       // "constexpr" aggregate
-} EvalKind;
-
-typedef struct {
-  EvalKind kind;
-  void *ptr;
-} EvalContext;
 
 // Likewise, global variables are accumulated to this list.
 static Obj *globals;
@@ -119,13 +107,12 @@ static void initializer2(Token **rest, Token *tok, Initializer *init);
 static Initializer *initializer(Token **rest, Token *tok, Type *ty, Type **new_ty);
 static Node *lvar_initializer(Token **rest, Token *tok, Obj *var);
 static void gvar_initializer(Token **rest, Token *tok, Obj *var);
-static void constexpr_initializer(Token **rest, Token *tok, Obj *init_var, Obj *var);
 static Node *compound_stmt(Token **rest, Token *tok, NodeKind kind);
 static Node *stmt(Token **rest, Token *tok, bool chained);
 static Node *expr_stmt(Token **rest, Token *tok);
 static Node *expr(Token **rest, Token *tok);
 static int64_t eval(Node *node);
-static int64_t eval2(Node *node, EvalContext *ctx);
+static int64_t eval2(Node *node, char ***label);
 static Node *assign(Token **rest, Token *tok);
 static Node *log_or(Token **rest, Token *tok);
 static long double eval_double(Node *node);
@@ -430,8 +417,7 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
   while (is_typename(tok)) {
     // Handle storage class specifiers.
     if (equal(tok, "typedef") || equal(tok, "static") || equal(tok, "extern") ||
-        equal(tok, "inline") || equal(tok, "_Thread_local") || equal(tok, "__thread") ||
-        equal(tok, "constexpr")) {
+        equal(tok, "inline") || equal(tok, "_Thread_local") || equal(tok, "__thread")) {
       if (!attr)
         error_tok(tok, "storage class specifier is not allowed in this context");
 
@@ -443,8 +429,6 @@ static Type *declspec(Token **rest, Token *tok, VarAttr *attr) {
         attr->is_extern = true;
       else if (equal(tok, "inline"))
         attr->is_inline = true;
-      else if (equal(tok, "constexpr"))
-        attr->is_constexpr = true;
       else
         attr->is_tls = true;
 
@@ -886,12 +870,6 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
       Obj *var = new_anon_gvar(ty);
       push_scope(get_ident(name))->var = var;
 
-      if (attr->is_constexpr) {
-        if (!equal(tok, "="))
-          error_tok(tok, "constexpr variable not initialized");
-        constexpr_initializer(&tok, tok->next, var, var);
-        continue;
-      }
       if (equal(tok, "="))
         gvar_initializer(&tok, tok->next, var);
       continue;
@@ -914,15 +892,6 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
     }
 
     Obj *var = new_lvar(get_ident(name), ty);
-    if (attr && attr->is_constexpr) {
-      if (!equal(tok, "="))
-        error_tok(tok, "constexpr variable not initialized");
-      Obj *init_var = new_anon_gvar(ty);
-      constexpr_initializer(&tok, tok->next, init_var, var);
-      chain_expr(&expr, new_binary(ND_ASSIGN, new_var_node(var, tok),
-                                   new_var_node(init_var, tok), tok));
-      continue;
-    }
     if (equal(tok, "="))
       chain_expr(&expr, lvar_initializer(&tok, tok->next, var));
 
@@ -1438,22 +1407,12 @@ static void write_buf(char *buf, uint64_t val, int sz) {
     internal_error();
 }
 
-static long double read_double_buf(char *buf, Type *ty){
-  if (ty->kind == TY_FLOAT)
-    return *(float *)buf;
-  if (ty->kind == TY_DOUBLE)
-    return *(double *)buf;
-  if (ty->kind == TY_LDOUBLE)
-    return *(long double *)buf;
-  internal_error();
-}
-
 static Relocation *
-write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int offset, EvalKind kind) {
+write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int offset) {
   if (ty->kind == TY_ARRAY) {
     int sz = ty->base->size;
     for (int i = 0; i < ty->array_len; i++)
-      cur = write_gvar_data(cur, init->children[i], ty->base, buf, offset + sz * i, kind);
+      cur = write_gvar_data(cur, init->children[i], ty->base, buf, offset + sz * i);
     return cur;
   }
 
@@ -1473,7 +1432,7 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
         write_buf(loc, combined, mem->ty->size);
       } else {
         cur = write_gvar_data(cur, init->children[mem->idx], mem->ty, buf,
-                              offset + mem->offset, kind);
+                              offset + mem->offset);
       }
     }
     return cur;
@@ -1483,7 +1442,7 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
     if (!init->mem)
       return cur;
     return write_gvar_data(cur, init->children[init->mem->idx],
-                           init->mem->ty, buf, offset, kind);
+                           init->mem->ty, buf, offset);
   }
 
   if (!init->expr)
@@ -1503,11 +1462,7 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
   }
 
   char **label = NULL;
-  EvalContext ctx = {.kind = kind};
-  if (kind == EV_LABEL)
-    ctx.ptr= &label;
-
-  uint64_t val = eval2(init->expr, &ctx);
+  uint64_t val = eval2(init->expr, &label);
 
   if (!label) {
     write_buf(buf + offset, val, ty->size);
@@ -1531,20 +1486,9 @@ static void gvar_initializer(Token **rest, Token *tok, Obj *var) {
 
   Relocation head = {0};
   char *buf = calloc(1, var->ty->size);
-  write_gvar_data(&head, init, var->ty, buf, 0, EV_LABEL);
+  write_gvar_data(&head, init, var->ty, buf, 0);
   var->init_data = buf;
   var->rel = head.next;
-}
-
-static void constexpr_initializer(Token **rest, Token *tok, Obj *init_var, Obj *var) {
-  Initializer *init = initializer(rest, tok, init_var->ty, &init_var->ty);
-
-  Relocation head = {0};
-  char *buf = calloc(1, init_var->ty->size);
-  write_gvar_data(&head, init, init_var->ty, buf, 0, EV_CONST);
-  init_var->init_data = var->constexpr_data = buf;
-  init_var->rel = head.next;
-  var->ty = init_var->ty;
 }
 
 // Returns true if a given token represents a type.
@@ -1565,8 +1509,6 @@ static bool is_typename(Token *tok) {
 
     if (opt_std == STD_NONE || opt_std >= STD_C23)
       hashmap_put(&map, "typeof", (void *)1);
-    if (opt_std >= STD_C23)
-      hashmap_put(&map, "constexpr", (void *)1);
   }
 
   return hashmap_get2(&map, tok->loc, tok->len) || find_typedef(tok);
@@ -1965,19 +1907,8 @@ static int64_t eval_error(Token *tok, char *fmt, ...) {
   exit(1);
 }
 
-static char *eval_constexpr_agg(Node *node) {
-  Obj *var;
-  EvalContext cxt = {.kind = EV_AGG, .ptr = &var};
-  int ofs = eval2(node, &cxt);
-  if (eval_recover && *eval_recover)
-    return NULL;
-  if (ofs < 0 || (var->ty->size < (ofs + node->ty->size)))
-    return (char *)eval_error(node->tok, "constexpr access out of bounds");
-  return var->constexpr_data + ofs;
-}
-
 static int64_t eval(Node *node) {
-  return eval2(node, &(EvalContext){0});
+  return eval2(node, NULL);
 }
 
 // Evaluate a given node as a constant expression.
@@ -1986,12 +1917,12 @@ static int64_t eval(Node *node) {
 // is a pointer to a global variable and n is a postiive/negative
 // number. The latter form is accepted only as an initialization
 // expression for a global variable.
-static int64_t eval2(Node *node, EvalContext *ctx) {
+static int64_t eval2(Node *node, char ***label) {
   switch (node->kind) {
   case ND_ADD:
-    return eval2(node->lhs, ctx) + eval(node->rhs);
+    return eval2(node->lhs, label) + eval(node->rhs);
   case ND_SUB:
-    return eval2(node->lhs, ctx) - eval(node->rhs);
+    return eval2(node->lhs, label) - eval(node->rhs);
   case ND_MUL:
     return eval(node->lhs) * eval(node->rhs);
   case ND_DIV: {
@@ -2072,11 +2003,11 @@ static int64_t eval2(Node *node, EvalContext *ctx) {
       return (uint64_t)eval(node->lhs) <= eval(node->rhs);
     return eval(node->lhs) <= eval(node->rhs);
   case ND_COND:
-    return eval(node->cond) ? eval2(node->then, ctx) : eval2(node->els, ctx);
+    return eval(node->cond) ? eval2(node->then, label) : eval2(node->els, label);
   case ND_CHAIN:
   case ND_COMMA:
-    eval2(node->lhs, ctx);
-    return eval2(node->rhs, ctx);
+    eval2(node->lhs, label);
+    return eval2(node->rhs, label);
   case ND_NOT:
     return !eval(node->lhs);
   case ND_BITNOT:
@@ -2097,14 +2028,14 @@ static int64_t eval2(Node *node, EvalContext *ctx) {
         return 1;
       if (is_flonum(node->lhs->ty))
         return !!eval_double(node->lhs);
-      return !!eval2(node->lhs, ctx);
+      return !!eval2(node->lhs, label);
     }
     if (is_flonum(node->lhs->ty)) {
       if (node->ty->size == 8 && node->ty->is_unsigned)
         return (uint64_t)eval_double(node->lhs);
       return eval_double(node->lhs);
     }
-    int64_t val = eval2(node->lhs, ctx);
+    int64_t val = eval2(node->lhs, label);
     if (is_integer(node->ty)) {
       switch (node->ty->size) {
       case 1: return node->ty->is_unsigned ? (uint8_t)val : (int64_t)(int8_t)val;
@@ -2118,54 +2049,23 @@ static int64_t eval2(Node *node, EvalContext *ctx) {
     return node->val;
   }
 
-  if (ctx->kind == EV_LABEL) {
+  if (label) {
     switch (node->kind) {
     case ND_ADDR:
     case ND_DEREF:
-      return eval2(node->lhs, ctx);
+      return eval2(node->lhs, label);
     case ND_MEMBER:
-      return eval2(node->lhs, ctx) + node->member->offset;
+      return eval2(node->lhs, label) + node->member->offset;
     case ND_LABEL_VAL:
-      *((char ***)ctx->ptr) = &node->unique_label;
+      *label = &node->unique_label;
       return 0;
     case ND_VAR:
       if (node->var->is_local)
         return eval_error(node->tok, "not a compile-time constant");
-      *((char ***)ctx->ptr) = &node->var->name;
+      *label = &node->var->name;
       return 0;
     }
     return eval_error(node->tok, "invalid initializer");
-  }
-
-  if (ctx->kind == EV_AGG) {
-    if (node->kind == ND_DEREF)
-      return eval2(node->lhs, ctx);
-    if (node->kind == ND_MEMBER)
-      return eval2(node->lhs, ctx) + node->member->offset;
-    if (node->kind == ND_VAR && node->var->constexpr_data) {
-      *((Obj **)ctx->ptr) = node->var;
-      return 0;
-    }
-    return eval_error(node->tok, "not a compile-time constant");
-  }
-
-  if (ctx->kind == EV_CONST) {
-    if (node->kind == ND_VAR && node->var->constexpr_data)
-      return read_buf(node->var->constexpr_data, node->var->ty->size);
-
-    if (node->kind == ND_MEMBER || node->kind == ND_DEREF) {
-      char *data = eval_constexpr_agg(node);
-      if (!data)
-        return 0;
-      int64_t val = read_buf(data, node->ty->size);
-      if (is_bitfield(node)) {
-        val <<= 64 - node->member->bit_width - node->member->bit_offset;
-        if (node->ty->is_unsigned)
-          return (uint64_t)val >> (64 - node->member->bit_width);
-        return val >> (64 - node->member->bit_width);
-      }
-      return val;
-    }
   }
 
   return eval_error(node->tok, "not a compile-time constant");
@@ -2231,16 +2131,6 @@ static long double eval_double(Node *node) {
     return eval(node->lhs);
   case ND_NUM:
     return node->fval;
-  }
-
-  if (node->kind == ND_VAR && node->var->constexpr_data)
-    return read_double_buf(node->var->constexpr_data, node->var->ty);
-
-  if (node->kind == ND_MEMBER || node->kind == ND_DEREF) {
-    char *data = eval_constexpr_agg(node);
-    if (!data)
-      return 0;
-    return read_double_buf(data, node->ty);
   }
 
   return eval_error(node->tok, "not a compile-time constant");
@@ -3648,13 +3538,6 @@ static Token *global_declaration(Token *tok, Type *basety, VarAttr *attr) {
     var->is_static = attr->is_static;
     var->is_tls = attr->is_tls;
 
-    if (attr->is_constexpr) {
-      if (!equal(tok, "="))
-        error_tok(tok, "constexpr variable not initialized");
-      constexpr_initializer(&tok, tok->next, var, var);
-      var->is_static = true;
-      continue;
-    }
     if (equal(tok, "="))
       gvar_initializer(&tok, tok->next, var);
     else if (!attr->is_extern && !attr->is_tls)
