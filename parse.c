@@ -1022,10 +1022,10 @@ static void designation(Token **rest, Token *tok, Initializer *init) {
     int begin, end;
     array_designator(&tok, tok, init->ty, &begin, &end);
 
-    Token *tok2;
+    Token *start = tok;
     for (int i = begin; i <= end; i++)
-      designation(&tok2, tok, init->children[i]);
-    array_initializer2(rest, tok2, init, begin + 1);
+      designation(&tok, start, init->children[i]);
+    array_initializer2(rest, tok, init, begin + 1);
     return;
   }
 
@@ -1093,10 +1093,9 @@ static void array_initializer1(Token **rest, Token *tok, Initializer *init) {
       int begin, end;
       array_designator(&tok, tok, init->ty, &begin, &end);
 
-      Token *tok2;
+      Token *start = tok;
       for (int j = begin; j <= end; j++)
-        designation(&tok2, tok, init->children[j]);
-      tok = tok2;
+        designation(&tok, start, init->children[j]);
       i = end;
       continue;
     }
@@ -3525,6 +3524,9 @@ static Token *global_declaration(Token *tok, Type *basety, VarAttr *attr) {
     Type *ty = declarator(&tok, tok, basety, &name);
 
     if (ty->kind == TY_FUNC) {
+      if (!name)
+        error_tok(tok, "function name omitted");
+
       if (equal(tok, "{")) {
         if (!first || scope->parent)
           error_tok(tok, "function definition is not allowed here");
