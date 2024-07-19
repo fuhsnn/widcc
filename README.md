@@ -1,20 +1,20 @@
-# slimcc: A C11 compiler
-This is a fork of [Rui Ueyama's chibicc](https://github.com/rui314/chibicc) that aims to fill in some missing features and fixes. 
+`widcc` is a stable branch of [`slimcc`](https://github.com/fuhsnn/slimcc) that
+ - don't attempt to optimize codegen 
+ - don't introduce new features (unless I really want certain projects to build)
+ - would rather remove a feature than to support it incorrectly (not a motto but to avoid giving autoconf the wrong idea)
+ 
+`slimcc` has accomplished a fairly good collection of real world projects it can build and 100% pass tests. `widcc` in turn is to be low-maintenance, simpler-to-port, easier-to-modify, and to serve as stable reference while I make more radical changes to slimcc. 
 
-# Changes over chibicc
- - written in C99
- - bug & conformance fixes (see [closed issues](https://github.com/fuhsnn/slimcc/issues?q=is%3Aissue+is%3Aclosed+label%3Aupstream))
- - new algorithm for macro expansion, less RAM usage and support [deep recursion tricks](https://stackoverflow.com/a/70342272) better
- - `setjmp.h` compatibility
- - support `_Static_assert()`, `__has_include`
- - support C23 `constexpr`, `__VA_OPT__` and `[[atttributes]]` (though mostly ignored)
- - support variably-modified types in function prototype (aka VLA parameters)
- - support VLA auto-deallocation
- - basic stack reuse optimization
- - basic register allocation of temporaries
+The following C11 features are removed: `_Alignof` `_Atomic` `_Generic`. These are not seen commonly in use, therefore widcc still declare itself a C11 compiler. 
 
-# Platform support
-Should just work on recent (2.28+) glibc-based x86-64 Linux. Musl support is almost there.
+wid stands for "When in doubt" from the famous quote.
 
-# Known issues
- - libtool doesn't generate the nessasary `-Wl,` `-fPIC` option, if you see `-soname` and PIC linker errors, try filling `*_wl=` `*_pic=` in configure scripts with `*_wl='-Wl,'` `*_pic='-fPIC'`
+# Building & Running
+ - Should just work on recent glibc-based (2.28+) x86-64 Linux.
+ - Test script needs `bash`; depending on the distro, `file` and/or `glibc-static` packages may be required.
+```
+git clone --depth 1 https://github.com/fuhsnn/widcc
+cd widcc
+make test-stage2 -j
+```
+Run it in base directory like `CC=~/widcc/widcc`
