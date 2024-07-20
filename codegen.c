@@ -37,25 +37,6 @@ static void println(char *fmt, ...) {
   fprintf(output_file, "\n");
 }
 
-static long resrvln(void) {
-  long loc = ftell(output_file);
-  fprintf(output_file, "                           \n");
-  return loc;
-}
-
-FMTCHK(1,3)
-static void insrtln(char *fmt, long loc, ...) {
-  long cur_loc = ftell(output_file);
-  fseek(output_file, loc, SEEK_SET);
-
-  va_list ap;
-  va_start(ap, loc);
-  vfprintf(output_file, fmt, ap);
-  va_end(ap);
-
-  fseek(output_file, cur_loc, SEEK_SET);
-}
-
 static int count(void) {
   static int i = 1;
   return i++;
@@ -109,7 +90,7 @@ static void pushf(void) {
   println("  movsd %%xmm0, -%d(%%rbp)", offset);
 }
 
-static void popf(char *reg) {
+static void popf(void) {
   int offset = pop_tmpstack();
   println("  movsd -%d(%%rbp), %%xmm1", offset);
 }
@@ -1142,7 +1123,7 @@ static void gen_expr(Node *node) {
     gen_expr(node->rhs);
 
     char *sz = (node->lhs->ty->kind == TY_DOUBLE) ? "sd" : "ss";
-    popf(sz);
+    popf();
 
     switch (node->kind) {
     case ND_ADD:
@@ -1239,11 +1220,11 @@ static void gen_expr(Node *node) {
   gen_expr(node->lhs);
   push();
   gen_expr(node->rhs);
+  pop("%rcx");
 
   bool is_r64 = node->lhs->ty->size == 8 || node->lhs->ty->base;
   char *ax = is_r64 ? "%rax" : "%eax";
   char *op = is_r64 ? "%rcx" : "%ecx";
-  pop("%rcx");
 
   switch (node->kind) {
   case ND_ADD:
@@ -1531,24 +1512,38 @@ static void emit_data(Obj *prog) {
   }
 }
 
-static void store_fp(int r, int sz, int ofs) {
+static void store_fp(int r, int offset, int sz) {
   switch (sz) {
-  case 4: println("  movss %%xmm%d, %d(%%rbp)", r, ofs); return;
-  case 8: println("  movsd %%xmm%d, %d(%%rbp)", r, ofs); return;
+  case 4:
+    println("  movss %%xmm%d, %d(%%rbp)", r, offset);
+    return;
+  case 8:
+    println("  movsd %%xmm%d, %d(%%rbp)", r, offset);
+    return;
   }
   internal_error();
 }
 
-static void store_gp(int r, int sz, int ofs) {
+static void store_gp(int r, int offset, int sz) {
   switch (sz) {
-  case 1: println("  mov %s, %d(%%rbp)", argreg8[r], ofs); return;
-  case 2: println("  mov %s, %d(%%rbp)", argreg16[r], ofs); return;
-  case 4: println("  mov %s, %d(%%rbp)", argreg32[r], ofs); return;
-  case 8: println("  mov %s, %d(%%rbp)", argreg64[r], ofs); return;
-  }
-  for (int i = 0; i < sz; i++) {
-    println("  mov %s, %d(%%rbp)", argreg8[r], ofs + i);
-    println("  shr $8, %s", argreg64[r]);
+  case 1:
+    println("  mov %s, %d(%%rbp)", argreg8[r], offset);
+    return;
+  case 2:
+    println("  mov %s, %d(%%rbp)", argreg16[r], offset);
+    return;
+  case 4:
+    println("  mov %s, %d(%%rbp)", argreg32[r], offset);
+    return;
+  case 8:
+    println("  mov %s, %d(%%rbp)", argreg64[r], offset);
+    return;
+  default:
+    for (int i = 0; i < sz; i++) {
+      println("  mov %s, %d(%%rbp)", argreg8[r], offset + i);
+      println("  shr $8, %s", argreg64[r]);
+    }
+    return;
   }
 }
 
@@ -1571,6 +1566,7 @@ static void emit_text(Obj *prog) {
       println("  .section .text.\"%s\",\"ax\",@progbits", fn->name);
     else
       println("  .text");
+
     println("  .type \"%s\", @function", fn->name);
     println("\"%s\":", fn->name);
 
@@ -1585,16 +1581,17 @@ static void emit_text(Obj *prog) {
     println("  push %%rbp");
     println("  mov %%rsp, %%rbp");
 
-    long stack_alloc_loc = resrvln();
+    long stack_alloc_loc = ftell(output_file);
+    println("                             ");
 
-    int lvar_stack = 0;
+    lvar_stk_sz = 0;
 
     // Save arg registers if function is variadic
     if (fn->ty->is_variadic) {
       va_gp_start = gp_count * 8;
       va_fp_start = fp_count * 16 + 48;
       va_st_start = arg_stk_size + 16;
-      lvar_stack = 176;
+      lvar_stk_sz += 176;
 
       switch (gp_count) {
       case 0: println("  movq %%rdi, -176(%%rbp)");
@@ -1622,16 +1619,16 @@ static void emit_text(Obj *prog) {
     }
 
     if (fn->dealloc_vla) {
-      vla_base_ofs = lvar_stack += 8;
+      vla_base_ofs = lvar_stk_sz += 8;
       println("  mov %%rsp, -%d(%%rbp)", vla_base_ofs);
     }
 
     if (rtn_by_stk) {
-      rtn_ptr_ofs = lvar_stack += 8;
+      rtn_ptr_ofs = lvar_stk_sz += 8;
       println("  mov %s, -%d(%%rbp)", argreg64[0], rtn_ptr_ofs);
     }
 
-    lvar_stk_sz = assign_lvar_offsets(fn->ty->scopes, lvar_stack);
+    lvar_stk_sz = assign_lvar_offsets(fn->ty->scopes, lvar_stk_sz);
     peak_stk_usage = lvar_stk_sz = align_to(lvar_stk_sz, 8);
 
     // Save passed-by-register arguments to the stack
@@ -1647,23 +1644,23 @@ static void emit_text(Obj *prog) {
       case TY_UNION:
         assert(ty->size <= 16);
         if (has_flonum1(ty))
-          store_fp(fp++, MIN(8, ty->size), var->ofs);
+          store_fp(fp++, var->ofs, MIN(8, ty->size));
         else
-          store_gp(gp++, MIN(8, ty->size), var->ofs);
+          store_gp(gp++, var->ofs, MIN(8, ty->size));
 
         if (ty->size > 8) {
           if (has_flonum2(ty))
-            store_fp(fp++, ty->size - 8, var->ofs + 8);
+            store_fp(fp++, var->ofs + 8, ty->size - 8);
           else
-            store_gp(gp++, ty->size - 8, var->ofs + 8);
+            store_gp(gp++, var->ofs + 8, ty->size - 8);
         }
         break;
       case TY_FLOAT:
       case TY_DOUBLE:
-        store_fp(fp++, ty->size, var->ofs);
+        store_fp(fp++, var->ofs, ty->size);
         break;
       default:
-        store_gp(gp++, ty->size, var->ofs);
+        store_gp(gp++, var->ofs, ty->size);
       }
     }
 
@@ -1671,7 +1668,10 @@ static void emit_text(Obj *prog) {
     gen_stmt(fn->body);
     assert(tmp_stk.depth == 0);
 
-    insrtln("  sub $%d, %%rsp", stack_alloc_loc, align_to(peak_stk_usage, 16));
+    long cur_loc = ftell(output_file);
+    fseek(output_file, stack_alloc_loc, SEEK_SET);
+    println("  sub $%d, %%rsp", align_to(peak_stk_usage, 16));
+    fseek(output_file, cur_loc, SEEK_SET);
 
     // [https://www.sigbus.info/n1570#5.1.2.2.3p1] The C spec defines
     // a special rule for the main function. Reaching the end of the
