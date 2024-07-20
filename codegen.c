@@ -1107,9 +1107,9 @@ static void gen_expr(Node *node) {
     gen_expr(node->lhs);
     pushf();
     gen_expr(node->rhs);
+    popf();
 
     char *sz = (node->lhs->ty->kind == TY_DOUBLE) ? "sd" : "ss";
-    popf();
 
     switch (node->kind) {
     case ND_ADD:
@@ -1130,7 +1130,12 @@ static void gen_expr(Node *node) {
     case ND_NE:
     case ND_LT:
     case ND_LE:
-      println("  ucomi%s %%xmm1, %%xmm0", sz);
+    case ND_GT:
+    case ND_GE:
+      if (node->kind == ND_GT || node->kind == ND_GE)
+        println("  ucomi%s %%xmm0, %%xmm1", sz);
+      else
+        println("  ucomi%s %%xmm1, %%xmm0", sz);
 
       if (node->kind == ND_EQ) {
         println("  sete %%al");
@@ -1140,16 +1145,15 @@ static void gen_expr(Node *node) {
         println("  setne %%al");
         println("  setp %%dl");
         println("  or %%dl, %%al");
-      } else if (node->kind == ND_LT) {
+      } else if (node->kind == ND_LT || node->kind == ND_GT) {
         println("  seta %%al");
-      } else {
+      } else if (node->kind == ND_LE || node->kind == ND_GE) {
         println("  setae %%al");
       }
 
       println("  movzbl %%al, %%eax");
       return;
     }
-
     error_tok(node->tok, "invalid expression");
   }
   case TY_LDOUBLE: {
@@ -1175,6 +1179,8 @@ static void gen_expr(Node *node) {
     case ND_NE:
     case ND_LT:
     case ND_LE:
+    case ND_GT:
+    case ND_GE:
       if (node->kind == ND_LT || node->kind == ND_LE)
         println("  fxch %%st(1)");
 
@@ -1189,16 +1195,15 @@ static void gen_expr(Node *node) {
         println("  setne %%al");
         println("  setp %%dl");
         println("  or %%dl, %%al");
-      } else if (node->kind == ND_LT) {
+      } else if (node->kind == ND_LT || node->kind == ND_GT) {
         println("  seta %%al");
-      } else {
+      } else if (node->kind == ND_LE || node->kind == ND_GE) {
         println("  setae %%al");
       }
 
       println("  movzbl %%al, %%eax");
       return;
     }
-
     error_tok(node->tok, "invalid expression");
   }
   }
@@ -1253,26 +1258,23 @@ static void gen_expr(Node *node) {
   case ND_NE:
   case ND_LT:
   case ND_LE:
-    println("  cmp %s, %s", ax, cx);
-
-    if (node->kind == ND_EQ) {
-      println("  sete %%al");
-    } else if (node->kind == ND_NE) {
-      println("  setne %%al");
-    } else if (node->kind == ND_LT) {
-      if (node->lhs->ty->is_unsigned)
-        println("  setb %%al");
-      else
-        println("  setl %%al");
-    } else if (node->kind == ND_LE) {
-      if (node->lhs->ty->is_unsigned)
-        println("  setbe %%al");
-      else
-        println("  setle %%al");
+  case ND_GT:
+  case ND_GE: {
+    bool is_unsigned = node->lhs->ty->is_unsigned;
+    char *ins;
+    switch (node->kind) {
+    case ND_EQ: ins = "sete"; break;
+    case ND_NE: ins = "setne"; break;
+    case ND_LT: ins = is_unsigned ? "setb" : "setl"; break;
+    case ND_LE: ins = is_unsigned ? "setbe" : "setle"; break;
+    case ND_GT: ins = is_unsigned ? "seta" : "setg"; break;
+    case ND_GE: ins = is_unsigned ? "setae" : "setge"; break;
     }
-
-    println("  movzb %%al, %%rax");
+    println("  cmp %s, %s", ax, cx);
+    println("  %s %%al", ins);
+    println("  movzbl %%al, %%eax");
     return;
+  }
   case ND_SHL:
     println("  xchg %s, %s", cx, ax);
     println("  shl %%cl, %s", ax);
