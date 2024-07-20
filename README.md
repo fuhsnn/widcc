@@ -62,6 +62,15 @@ sh ~/widcc/add_wl_pic.sh ./configure
 CC=~/widcc/widcc CFLAGS=-D_GNU_SOURCE ./configure
 make testrunner
 ```
+`TinyCC mob branch`
+```
+git clone --depth 1 https://repo.or.cz/tinycc.git
+cd tinycc
+CC=~/widcc/widcc ./configure
+make -j
+cd tests/tests2/
+make
+```
 `vim trunk`
 ```
 git clone --depth 1 https://github.com/vim/vim

@@ -333,7 +333,7 @@ static void store(Type *ty) {
     return;
   case TY_LDOUBLE:
     println("  fstpt (%%rcx)");
-    println("  fldt (%%rcx)");
+    println("  fninit; fldt (%%rcx)");
     return;
   }
 
