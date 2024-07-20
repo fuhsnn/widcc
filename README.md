@@ -1,13 +1,15 @@
 `widcc` is a stable branch of [`slimcc`](https://github.com/fuhsnn/slimcc) that
- - don't attempt to optimize codegen 
- - don't introduce new features (unless I really want certain projects to build)
+ - does not attempt to optimize codegen 
+ - does not introduce new features (unless I really want certain projects to build)
  - would rather remove a feature than to support it incorrectly (not a motto but to avoid giving autoconf the wrong idea)
  
-`slimcc` has accomplished a fairly good collection of real world projects it can build and 100% pass tests. `widcc` in turn is to be low-maintenance, simpler-to-port, easier-to-modify, and to serve as stable reference while I make more radical changes to slimcc. 
+`slimcc` has accomplished a fairly good collection of real world projects it can build and 100% pass tests. `widcc` in turn is to maintain that status while being simpler-to-port and easier-to-modify.
 
 The following C11 features are removed: `_Alignof` `_Atomic` `_Generic`. These are not seen commonly in use, therefore widcc still declare itself a C11 compiler. 
 
 wid stands for "When in doubt" from the famous quote.
+
+`widcc` is based on [Rui Ueyama's `chibicc`](https://github.com/rui314/chibicc), if you are familiar with chibicc and would like to know what's different here, refer [below](#changes-over-chibicc).
 
 # Building & Running
  - Should just work on recent glibc-based (2.28+) x86-64 Linux.
@@ -68,3 +70,9 @@ CC=~/widcc/widcc ./configure
 make -j
 make testtiny
 ```
+
+# Changes over chibicc
+- A stack manager for temporaries is introduced to avoid clobbering when setjmp/longjmp happen between pairs of push-pop, by translating push-pop's into mov's. `slimcc` took this further and added register allocation on top of the manager.
+- Local variables of parallel scopes are folded into the same stack space, this dramatically eliminated segfaults in projects that do recursive calls a lot, and is about the only optimization worth mentioning in `widcc`.
+- `chibicc`'s preprocessor hideset algorithm had issues with some obscure macro expansion tricks, I moved to a simple-but-dirtier design that avoid building hidesets altogether, but apparently [n0tknowing's chibicc fork](https://github.com/n0tknowing/chibicc) worked that out.
+- `chibicc` had a tricky implementation of function calling, by interleaving argument-pushing with evaluation, then finally popping them off one-by-one. I simplified the process by storing evaluated arguments to temporary variables, then copy into the right spots; it's inefficient, but the reduced conceptual load worth it.
