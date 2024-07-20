@@ -2026,11 +2026,10 @@ static int64_t eval2(Node *node, char ***label) {
     }
     return eval(node->lhs) << eval(node->rhs);
   case ND_SHR:
-    if (node->ty->is_unsigned) {
-      if (node->ty->size == 4)
-        return (uint32_t)eval(node->lhs) >> eval(node->rhs);
-      return (uint64_t)eval(node->lhs) >> eval(node->rhs);
-    }
+    if (node->ty->size == 4)
+      return (uint32_t)eval(node->lhs) >> eval(node->rhs);
+    return (uint64_t)eval(node->lhs) >> eval(node->rhs);
+  case ND_SAR:
     if (node->ty->size == 4)
       return (int32_t)eval(node->lhs) >> eval(node->rhs);
     return eval(node->lhs) >> eval(node->rhs);
@@ -2246,7 +2245,6 @@ static Node *to_assign(Node *binary) {
 //           | "<<=" | ">>="
 static Node *assign(Token **rest, Token *tok) {
   Node *node = conditional(&tok, tok);
-  add_type(node);
 
   if (equal(tok, "="))
     return new_binary(ND_ASSIGN, node, assign(rest, tok->next), tok);
@@ -2278,8 +2276,13 @@ static Node *assign(Token **rest, Token *tok) {
   if (equal(tok, "<<="))
     return to_assign(new_binary(ND_SHL, node, assign(rest, tok->next), tok));
 
-  if (equal(tok, ">>="))
-    return to_assign(new_binary(ND_SHR, node, assign(rest, tok->next), tok));
+  if (equal(tok, ">>=")) {
+    add_type(node);
+    if (node->ty->is_unsigned)
+      return to_assign(new_binary(ND_SHR, node, assign(rest, tok->next), tok));
+    else
+      return to_assign(new_binary(ND_SAR, node, assign(rest, tok->next), tok));
+  }
 
   *rest = tok;
   return node;
@@ -2440,7 +2443,11 @@ static Node *shift(Token **rest, Token *tok) {
     }
 
     if (equal(tok, ">>")) {
-      node = new_binary(ND_SHR, node, add(&tok, tok->next), start);
+      add_type(node);
+      if (node->ty->is_unsigned)
+        node = new_binary(ND_SHR, node, add(&tok, tok->next), start);
+      else
+        node = new_binary(ND_SAR, node, add(&tok, tok->next), start);
       continue;
     }
 

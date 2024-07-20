@@ -974,20 +974,6 @@ static void gen_expr(Node *node) {
     println(".L.true.%d:", c);
     return;
   }
-  case ND_SHL:
-  case ND_SHR:
-    gen_expr(node->lhs);
-    push();
-    gen_expr(node->rhs);
-    println("  mov %%eax, %%ecx");
-    pop("%rax");
-    if (node->kind == ND_SHL)
-      println("  shl %%cl, %s", regop_ax(node->ty));
-    else if (node->lhs->ty->is_unsigned)
-      println("  shr %%cl, %s", regop_ax(node->ty));
-    else
-      println("  sar %%cl, %s", regop_ax(node->ty));
-    return;
   case ND_FUNCALL: {
     if (node->lhs->kind == ND_VAR && !strcmp(node->lhs->var->name, "alloca")) {
       gen_expr(node->args_expr);
@@ -1224,50 +1210,50 @@ static void gen_expr(Node *node) {
 
   bool is_r64 = node->lhs->ty->size == 8 || node->lhs->ty->base;
   char *ax = is_r64 ? "%rax" : "%eax";
-  char *op = is_r64 ? "%rcx" : "%ecx";
+  char *cx = is_r64 ? "%rcx" : "%ecx";
 
   switch (node->kind) {
   case ND_ADD:
-    println("  add %s, %s", op, ax);
+    println("  add %s, %s", cx, ax);
     return;
   case ND_SUB:
-    println("  sub %s, %s", ax, op);
-    println("  mov %s, %s", op, ax);
+    println("  sub %s, %s", ax, cx);
+    println("  mov %s, %s", cx, ax);
     return;
   case ND_MUL:
-    println("  imul %s, %s", op, ax);
+    println("  imul %s, %s", cx, ax);
     return;
   case ND_DIV:
   case ND_MOD:
-    println("  xchg %s, %s", op, ax);
+    println("  xchg %s, %s", cx, ax);
     if (node->ty->is_unsigned) {
       println("  xor %%edx, %%edx");
-      println("  div %s", op);
+      println("  div %s", cx);
     } else {
       if (node->lhs->ty->size == 8)
         println("  cqo");
       else
         println("  cdq");
-      println("  idiv %s", op);
+      println("  idiv %s", cx);
     }
 
     if (node->kind == ND_MOD)
       println("  mov %%rdx, %%rax");
     return;
   case ND_BITAND:
-    println("  and %s, %s", op, ax);
+    println("  and %s, %s", cx, ax);
     return;
   case ND_BITOR:
-    println("  or %s, %s", op, ax);
+    println("  or %s, %s", cx, ax);
     return;
   case ND_BITXOR:
-    println("  xor %s, %s", op, ax);
+    println("  xor %s, %s", cx, ax);
     return;
   case ND_EQ:
   case ND_NE:
   case ND_LT:
   case ND_LE:
-    println("  cmp %s, %s", ax, op);
+    println("  cmp %s, %s", ax, cx);
 
     if (node->kind == ND_EQ) {
       println("  sete %%al");
@@ -1286,6 +1272,18 @@ static void gen_expr(Node *node) {
     }
 
     println("  movzb %%al, %%rax");
+    return;
+  case ND_SHL:
+    println("  xchg %s, %s", cx, ax);
+    println("  shl %%cl, %s", ax);
+    return;
+  case ND_SHR:
+    println("  xchg %s, %s", cx, ax);
+    println("  shr %%cl, %s", ax);
+    return;
+  case ND_SAR:
+    println("  xchg %s, %s", cx, ax);
+    println("  sar %%cl, %s", ax);
     return;
   }
 
