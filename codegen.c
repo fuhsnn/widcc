@@ -976,16 +976,19 @@ static void gen_expr(Node *node) {
   }
   case ND_FUNCALL: {
     if (node->lhs->kind == ND_VAR && !strcmp(node->lhs->var->name, "alloca")) {
-      gen_expr(node->args_expr);
+      gen_expr(node->args->arg_expr);
       builtin_alloca(node);
       return;
     }
 
+    // Evaluate function pointer
     gen_expr(node->lhs);
     push();
 
-    if (node->args_expr)
-      gen_expr(node->args_expr);
+    // Evaluate arguments
+    for (Obj *var = node->args; var; var = var->param_next)
+      if (var->arg_expr)
+        gen_expr(var->arg_expr);
 
     pop("%r10");
 

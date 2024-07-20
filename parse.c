@@ -3011,7 +3011,6 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
 
   Obj head = {0};
   Obj *cur = &head;
-  Node *expr = NULL;
 
   enter_tmp_scope();
 
@@ -3038,8 +3037,9 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
     add_type(arg);
 
     Obj *var = new_lvar(NULL, arg->ty);
-    chain_expr(&expr, new_binary(ND_ASSIGN, new_var_node(var, tok), arg, tok));
-    add_type(expr);
+    arg = new_binary(ND_ASSIGN, new_var_node(var, tok), arg, tok);
+    add_type(arg);
+    var->arg_expr = arg;
 
     cur = cur->param_next = var;
   }
@@ -3051,7 +3051,6 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
   Node *node = new_unary(ND_FUNCALL, fn, tok);
   node->ty = ty->return_ty;
   node->args = head.param_next;
-  node->args_expr = expr;
 
   // If a function returns a struct, it is caller's responsibility
   // to allocate a space for the return value.

@@ -179,6 +179,7 @@ struct Obj {
   Obj *vla_next;
   bool pass_by_stack;
   int stack_offset;
+  Node *arg_expr;
 
   // Global variable or function
   bool is_function;
@@ -300,7 +301,6 @@ struct Node {
   // Function call
   Obj *ret_buffer;
   Obj *args;
-  Node *args_expr;
 
   // Goto or labeled statement, or labels-as-values
   char *label;
