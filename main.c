@@ -7,7 +7,6 @@ typedef enum {
 StringArray include_paths;
 bool opt_fcommon = true;
 bool opt_fpic;
-bool opt_optimize;
 bool opt_g;
 bool opt_func_sections;
 bool opt_data_sections;
@@ -347,13 +346,6 @@ static void parse_args(int argc, char **argv) {
       continue;
     }
 
-    if (!strncmp(argv[i], "-O", 2)) {
-      if (argv[i][2] == '0')
-        opt_optimize = false;
-      else
-        opt_optimize = true;
-      continue;
-    }
     if (!strncmp(argv[i], "-std=c", 6)) {
       int val = strtoul(argv[i] + 6, NULL, 10);
       if (val == 89 || val == 90)
@@ -395,7 +387,8 @@ static void parse_args(int argc, char **argv) {
     }
 
     // These options are ignored for now.
-    if (!strncmp(argv[i], "-W", 2) ||
+    if (!strncmp(argv[i], "-O", 2) ||
+        !strncmp(argv[i], "-W", 2) ||
         !strncmp(argv[i], "-std=", 5) ||
         !strncmp(argv[i], "-march=", 7) ||
         !strcmp(argv[i], "-ffreestanding") ||

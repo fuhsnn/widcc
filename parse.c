@@ -1415,17 +1415,13 @@ static Node *lvar_initializer(Token **rest, Token *tok, Obj *var) {
   Initializer *init = initializer(rest, tok, var->ty, &var->ty);
   InitDesg desg = {NULL, 0, NULL, var};
 
-  Node *expr = create_lvar_init(init, var->ty, &desg, tok);
-  if (opt_optimize && init->expr)
-    return expr;
-
   // If a partial initializer list is given, the standard requires
   // that unspecified elements are set to 0. Here, we simply
   // zero-initialize the entire memory region of a variable before
   // initializing it with user-supplied values.
   Node *node = new_node(ND_MEMZERO, tok);
   node->var = var;
-  chain_expr(&node, expr);
+  chain_expr(&node, create_lvar_init(init, var->ty, &desg, tok));
   return node;
 }
 
