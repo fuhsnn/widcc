@@ -23,7 +23,7 @@ Run it in base directory like `CC=~/widcc/widcc`
 
 # Building real-world projects
 
-(package dependencies are assumed to be in place)
+(package dependencies are assumed to be present)
 
 `curl 8.8.0`
 ```
@@ -33,6 +33,20 @@ cd curl/cmakebuild
 cmake ../ -DCMAKE_C_COMPILER=/full/path/to/widcc -DCMAKE_C_FLAGS=-fPIC
 make -j
 make quiet-test -j
+```
+`gcc 4.7.4`
+```
+mkdir gccbuild gccinstall
+wget https://ftp.gnu.org/gnu/gcc/gcc-4.7.4/gcc-4.7.4.tar.bz2
+tar -xf gcc-4.7.4.tar.bz2
+cd gcc-4.7.4
+find . -name 'configure' -exec sh ~/widcc/add_wl_pic.sh {} \;
+sed -i 's/^\extern const unsigned int $/const unsigned int/g' ./gcc/c-family/c-opts.c
+sed -i 's/^\s*struct ucontext/ucontext_t/g' ./libgcc/config/i386/linux-unwind.h
+cd ../gccbuild
+CC=~/widcc/widcc MAKEINFO=missing ../gcc-4.7.4/configure --prefix=$HOME/gccinstall/ --enable-languages=c,c++ --disable-multilib --disable-bootstrap
+make -j
+make install
 ```
 `git 2.45.2`
 ```
