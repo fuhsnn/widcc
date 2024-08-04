@@ -25,9 +25,9 @@ Run it in base directory like `CC=~/widcc/widcc`
 
 (package dependencies are assumed to be present)
 
-`curl 8.8.0`
+`curl 8.9.1`
 ```
-git clone --depth 1 https://github.com/curl/curl --branch curl-8_8_0
+git clone --depth 1 https://github.com/curl/curl --branch curl-8_9_1
 mkdir curl/cmakebuild
 cd curl/cmakebuild
 cmake ../ -DCMAKE_C_COMPILER=/full/path/to/widcc -DCMAKE_C_FLAGS=-fPIC
@@ -48,9 +48,9 @@ CC=~/widcc/widcc MAKEINFO=missing ../gcc-4.7.4/configure --prefix=$HOME/gccinsta
 make -j
 make install
 ```
-`git 2.45.2`
+`git 2.46.0`
 ```
-git clone --depth 1 https://github.com/git/git --branch v2.45.2
+git clone --depth 1 https://github.com/git/git --branch v2.46.0
 cd git
 make CC=~/widcc/widcc V=1 test -j
 ```
