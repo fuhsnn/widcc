@@ -189,6 +189,7 @@ struct Obj {
   bool is_function;
   bool is_definition;
   bool is_static;
+  Obj *static_lvars;
 
   // Global variable
   bool is_tentative;

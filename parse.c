@@ -325,9 +325,14 @@ static Obj *new_anon_gvar(Type *ty) {
   return var;
 }
 
-static Obj *new_string_literal(char *p, Type *ty) {
-  Obj *var = new_anon_gvar(ty);
-  var->init_data = p;
+static Obj *new_static_lvar(Type *ty) {
+  Obj *var = new_var(NULL, ty);
+  var->name = new_unique_name();
+  var->is_definition = true;
+  var->is_static = true;
+
+  var->next = current_fn->static_lvars;
+  current_fn->static_lvars = var;
   return var;
 }
 
@@ -914,7 +919,7 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
         error_tok(tok, "variable length arrays cannot be 'static'");
 
       // static local variable
-      Obj *var = new_anon_gvar(ty);
+      Obj *var = new_static_lvar(ty);
       var->is_tls = attr->is_tls;
 
       push_scope(get_ident(name))->var = var;
@@ -3276,7 +3281,8 @@ static Node *primary(Token **rest, Token *tok) {
     if (current_fn && (equal(tok, "__func__") || equal(tok, "__FUNCTION__"))) {
       char *name = current_fn->name;
       VarScope *vsc = calloc(1, sizeof(VarScope));
-      vsc->var = new_string_literal(name, array_of(ty_pchar, strlen(name) + 1));
+      vsc->var = new_static_lvar(array_of(ty_pchar, strlen(name) + 1));
+      vsc->var->init_data = name;
       hashmap_put(&current_fn->ty->scopes->vars, "__func__", vsc);
       hashmap_put(&current_fn->ty->scopes->vars, "__FUNCTION__", vsc);
       return new_var_node(vsc->var, tok);
@@ -3288,7 +3294,13 @@ static Node *primary(Token **rest, Token *tok) {
   }
 
   if (tok->kind == TK_STR) {
-    Obj *var = new_string_literal(tok->str, tok->ty);
+    Obj *var;
+    if (!current_fn)
+      var = new_anon_gvar(tok->ty);
+    else
+      var = new_static_lvar(tok->ty);
+
+    var->init_data = tok->str;
     *rest = tok->next;
     Node *n = new_var_node(var, tok);
     add_type(n);
