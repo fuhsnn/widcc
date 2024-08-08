@@ -986,10 +986,14 @@ static void gen_expr(Node *node) {
     push();
 
     // Evaluate arguments
-    for (Obj *var = node->args; var; var = var->param_next)
-      if (var->arg_expr)
-        gen_expr(var->arg_expr);
-
+    for (Obj *var = node->args; var; var = var->param_next) {
+      if (var->arg_expr) {
+        Node var_node = {.kind = ND_VAR, .var = var, .tok = node->tok};
+        Node assign_node = {.kind = ND_ASSIGN, .lhs = &var_node, .rhs = var->arg_expr, .tok = node->tok};
+        add_type(&assign_node);
+        gen_expr(&assign_node);
+      }
+    }
     pop("%r10");
 
     // If the return type is a large struct/union, the caller passes

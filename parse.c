@@ -3022,12 +3022,8 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
 
     add_type(arg);
 
-    Obj *var = new_lvar(NULL, arg->ty);
-    arg = new_binary(ND_ASSIGN, new_var_node(var, tok), arg, tok);
-    add_type(arg);
-    var->arg_expr = arg;
-
-    cur = cur->param_next = var;
+    cur = cur->param_next = new_lvar(NULL, arg->ty);
+    cur->arg_expr = arg;
   }
   if (param)
     error_tok(tok, "too few arguments");
