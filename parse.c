@@ -1584,7 +1584,7 @@ static Node *asm_stmt(Token **rest, Token *tok) {
   if (tok->kind != TK_STR || tok->ty->base->kind != TY_PCHAR)
     error_tok(tok, "expected string literal");
   node->asm_str = tok->str;
-  *rest = skip(tok->next, ")");
+  *rest = skip(skip(tok->next, ")"), ";");
   return node;
 }
 
