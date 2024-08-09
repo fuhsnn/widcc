@@ -53,10 +53,11 @@ git clone --depth 1 https://github.com/git/git --branch v2.46.0
 cd git
 make CC=~/widcc/widcc V=1 test -j
 ```
-`PostgreSQL 15.7`
+`PostgreSQL 17.0`
 ```
-git clone --depth 1 https://github.com/postgres/postgres --branch REL_15_7
+git clone --depth 1 https://github.com/postgres/postgres --branch REL_17_BETA3
 cd postgres
+sed -i 's/^\#if (defined(__x86_64__) || defined(_M_AMD64))/#if 0/g' src/include/port/simd.h
 CC=~/widcc/widcc ./configure --disable-spinlocks --disable-atomics
 make check -j
 ```
