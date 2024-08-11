@@ -1417,6 +1417,8 @@ static void gen_stmt(Node *node) {
     gen_expr(node->lhs);
     return;
   case ND_ASM:
+    if (!node->asm_str)
+      error_tok(node->tok, "GNU inline assembly not implemented");
     println("  %s", node->asm_str);
     return;
   }
