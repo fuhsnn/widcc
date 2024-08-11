@@ -85,6 +85,15 @@ make -j
 cd tests/tests2/
 make
 ```
+`toybox 0.8.11`
+```
+git clone --depth 1 https://github.com/landley/toybox --branch 0.8.11
+cd toybox
+sed -i 's/^\#define printf_format$/#define QUIET\n#define printf_format/g' lib/portability.h
+make CC=~/widcc/widcc defconfig
+make CC=~/widcc/widcc V=1
+make CC=~/widcc/widcc tests
+```
 `vim trunk`
 ```
 git clone --depth 1 https://github.com/vim/vim
