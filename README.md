@@ -61,16 +61,16 @@ sed -i 's/^\#if (defined(__x86_64__) || defined(_M_AMD64))/#if 0/g' src/include/
 CC=~/widcc/widcc ./configure --disable-spinlocks --disable-atomics
 make check -j
 ```
-`Python 3.11.9`
+`Python 3.12.5`
 ```
-git clone --depth 1 https://github.com/python/cpython --branch v3.11.9
+git clone --depth 1 https://github.com/python/cpython --branch v3.12.5
 cd cpython
 CC=~/widcc/widcc ./configure
 make test -j
 ```
-`sqlite 3.46.0`
+`sqlite 3.46.1`
 ```
-git clone --depth 1 https://github.com/sqlite/sqlite/ --branch version-3.46.0
+git clone --depth 1 https://github.com/sqlite/sqlite/ --branch version-3.46.1
 cd sqlite
 sh ~/widcc/add_wl_pic.sh ./configure
 CC=~/widcc/widcc CFLAGS=-D_GNU_SOURCE ./configure
