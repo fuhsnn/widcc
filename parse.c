@@ -88,6 +88,7 @@ static Node *current_switch;
 
 static Obj *current_vla;
 static Obj *brk_vla;
+static Obj *cont_vla;
 static bool fn_use_vla;
 static bool dont_dealloc_vla;
 
@@ -1597,14 +1598,16 @@ static void loop_body(Token **rest, Token *tok, Node *node) {
   brk_label = node->brk_label = new_unique_name();
   cont_label = node->cont_label = new_unique_name();
 
-  Obj *vla = brk_vla;
-  brk_vla = current_vla;
+  Obj *brkvla = brk_vla;
+  Obj *contvla = cont_vla;
+  brk_vla = cont_vla = current_vla;
 
   node->then = stmt(rest, tok, true);
 
   brk_label = brk;
   cont_label = cont;
-  brk_vla = vla;
+  brk_vla = brkvla;
+  cont_vla = contvla;
 }
 
 // stmt = "return" expr? ";"
@@ -1832,7 +1835,7 @@ static Node *stmt(Token **rest, Token *tok, bool chained) {
       error_tok(tok, "stray continue");
     Node *node = new_node(ND_GOTO, tok);
     node->unique_label = cont_label;
-    node->target_vla = brk_vla;
+    node->target_vla = cont_vla;
     node->top_vla = current_vla;
     *rest = skip(tok->next, ";");
     return node;
