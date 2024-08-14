@@ -53,6 +53,16 @@ git clone --depth 1 https://github.com/git/git --branch v2.46.0
 cd git
 make CC=~/widcc/widcc V=1 test -j
 ```
+`Perl 5.41.2`
+```
+git clone --depth 1 https://github.com/perl/perl5 --branch v5.41.2
+cd perl5
+sed -i -e 's/1.38/1.39/g' ext/Errno/Errno_pm.PL
+sed -i "187i push(@file, '/usr/include/asm-generic/errno-base.h');" ext/Errno/Errno_pm.PL
+sed -i "188i push(@file, '/usr/include/asm-generic/errno.h');" ext/Errno/Errno_pm.PL
+./Configure -des -Dcc=$HOME/widcc/widcc -Dusedevel -Accflags=-fPIC
+make test -j
+```
 `PostgreSQL 17.0`
 ```
 git clone --depth 1 https://github.com/postgres/postgres --branch REL_17_BETA3
