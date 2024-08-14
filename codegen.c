@@ -1063,7 +1063,7 @@ static void gen_expr(Node *node) {
     Type *ty = node->ty;
     Obj *var = node->var;
 
-    if (ty->size <= 16) {
+    if (ty->size <= 16 && ty->kind != TY_LDOUBLE) {
       int gp_inc = !has_flonum1(ty) + (ty->size > 8 && !has_flonum2(ty));
       if (gp_inc) {
         println("  cmpl $%d, (%%rax)", 48 - gp_inc * 8);
