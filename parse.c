@@ -1980,19 +1980,15 @@ static int64_t eval2(Node *node, char ***label) {
   case ND_MUL:
     return eval(node->lhs) * eval(node->rhs);
   case ND_DIV: {
-    int64_t lhs = eval(node->lhs);
-    int64_t rhs = eval(node->rhs);
-    if (!rhs)
+    int64_t lval = eval(node->lhs);
+    int64_t rval = eval(node->rhs);
+    if (!rval)
       return eval_error(node->rhs->tok, "division by zero during constant evaluation");
-    if (rhs == -1 && !node->ty->is_unsigned) {
-      if (node->ty->size == 4 && lhs == INT32_MIN)
-        return INT32_MIN;
-      if (node->ty->size == 8 && lhs == INT64_MIN)
-        return INT64_MIN;
-    }
     if (node->ty->is_unsigned)
-      return (uint64_t)lhs / rhs;
-    return lhs / rhs;
+      return (uint64_t)lval / rval;
+    if (lval == INT64_MIN && rval == -1)
+      return INT64_MIN;
+    return lval / rval;
   }
   case ND_POS:
     return eval(node->lhs);
@@ -2004,15 +2000,15 @@ static int64_t eval2(Node *node, char ***label) {
     }
     return -eval(node->lhs);
   case ND_MOD: {
-    int64_t lhs = eval(node->lhs);
-    int64_t rhs = eval(node->rhs);
-    if (!rhs)
+    int64_t lval = eval(node->lhs);
+    int64_t rval = eval(node->rhs);
+    if (!rval)
       return eval_error(node->rhs->tok, "remainder by zero during constant evaluation");
-    if (rhs == -1 && !node->ty->is_unsigned && node->ty->size == 8 && lhs == INT64_MIN)
-        return 0;
     if (node->ty->is_unsigned)
-      return (uint64_t)lhs % rhs;
-    return lhs % rhs;
+      return (uint64_t)lval % rval;
+    if (lval == INT64_MIN && rval == -1)
+      return 0;
+    return lval % rval;
   }
   case ND_BITAND:
     return eval(node->lhs) & eval(node->rhs);
@@ -3151,7 +3147,7 @@ static Node *primary(Token **rest, Token *tok) {
   if (equal(tok, "__builtin_constant_p")) {
     Node *node = new_node(ND_NUM, tok);
     tok = skip(tok->next, "(");
-    node->val = is_const_expr(expr(&tok, tok), &(int64_t){0});
+    node->val = is_const_expr(expr(&tok, tok), NULL);
     node->ty = ty_int;
     *rest = skip(tok, ")");
     return node;

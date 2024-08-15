@@ -15,7 +15,7 @@ StdVer opt_std;
 
 static StringArray opt_include;
 bool opt_E;
-bool opt_P;
+static bool opt_P;
 static bool opt_M;
 static bool opt_MD;
 static bool opt_MMD;
