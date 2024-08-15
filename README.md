@@ -63,6 +63,14 @@ sed -i "188i push(@file, '/usr/include/asm-generic/errno.h');" ext/Errno/Errno_p
 ./Configure -des -Dcc=$HOME/widcc/widcc -Dusedevel -Accflags=-fPIC
 make test -j
 ```
+`PHP 8.1.29`
+```
+git clone --depth 1 https://github.com/php/php-src/ --branch php-8.1.29
+cd php-src
+sh ~/widcc/add_wl_pic.sh ./configure
+CC=~/widcc/widcc CFLAGS=-std=c99 ./configure --without-pcre-jit --disable-opcache --without-valgrind
+make NO_INTERACTION=1 test -j
+```
 `PostgreSQL 17.0`
 ```
 git clone --depth 1 https://github.com/postgres/postgres --branch REL_17_BETA3
