@@ -594,7 +594,7 @@ static void print_dependencies(void) {
 
   for (int i = 0; files[i]; i++) {
     char *name = files[i]->name;
-    if ((opt_MMD && in_std_include_path(name)) || !strcmp(name, "widcc_builtins"))
+    if ((opt_MMD && in_std_include_path(name)) || files[i]->non_input)
       continue;
     fprintf(out, " \\\n  %s", name);
   }
@@ -604,7 +604,7 @@ static void print_dependencies(void) {
   if (opt_MP) {
     for (int i = 1; files[i]; i++) {
       char *name = files[i]->name;
-      if ((opt_MMD && in_std_include_path(name)) || !strcmp(name, "widcc_builtins"))
+      if ((opt_MMD && in_std_include_path(name)) || files[i]->non_input)
         continue;
       fprintf(out, "%s:\n\n", quote_makefile(name));
     }
@@ -630,7 +630,7 @@ static void cc1(void) {
     "  unsigned int fp_offset;"
     "  void *overflow_arg_area;"
     "  void *reg_save_area;"
-    "} __builtin_va_list[1];"), &end);
+    "} __builtin_va_list[1];", true), &end);
     cur = end;
   }
 
