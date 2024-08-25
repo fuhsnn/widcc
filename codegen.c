@@ -346,29 +346,6 @@ static void store(Type *ty) {
   internal_error();
 }
 
-static void cmp_zero(Type *ty) {
-  switch (ty->kind) {
-  case TY_FLOAT:
-    println("  xorps %%xmm1, %%xmm1");
-    println("  ucomiss %%xmm1, %%xmm0");
-    return;
-  case TY_DOUBLE:
-    println("  xorpd %%xmm1, %%xmm1");
-    println("  ucomisd %%xmm1, %%xmm0");
-    return;
-  case TY_LDOUBLE:
-    println("  fldz");
-    println("  fucomip");
-    println("  fstp %%st(0)");
-    return;
-  }
-
-  if (is_integer(ty) && ty->size <= 4)
-    println("  test %%eax, %%eax");
-  else
-    println("  test %%rax, %%rax");
-}
-
 enum { I8, I16, I32, I64, U8, U16, U32, U64, F32, F64, F80 };
 
 static int getTypeId(Type *ty) {
@@ -492,19 +469,20 @@ static char *cast_table[][11] = {
   {f80i8, f80i16, f80i32, f80i64, f80u8, f80u16, f80u32, f80u64, f80f32, f80f64, NULL},   // f80
 };
 
-static void cast(Type *from, Type *to) {
-  if (to->kind == TY_VOID)
-    return;
-
-  if (to->kind == TY_BOOL) {
-    cmp_zero(from);
-    println("  setne %%al");
-    println("  movzx %%al, %%eax");
+static void gen_cast(Node *node) {
+  if (node->ty->kind == TY_BOOL) {
+    Node zero = {.kind = ND_NUM, .ty = node->lhs->ty, .tok = node->tok};
+    Node expr = {.kind = ND_NE, .lhs = node->lhs, .rhs = &zero, .ty = ty_int, .tok = node->tok};
+    gen_expr(&expr);
     return;
   }
+  gen_expr(node->lhs);
 
-  int t1 = getTypeId(from);
-  int t2 = getTypeId(to);
+  if (node->ty->kind == TY_VOID)
+    return;
+
+  int t1 = getTypeId(node->lhs->ty);
+  int t2 = getTypeId(node->ty);
   if (cast_table[t1][t2])
     println("  %s", cast_table[t1][t2]);
 }
@@ -930,8 +908,7 @@ static void gen_expr(Node *node) {
     gen_expr(node->rhs);
     return;
   case ND_CAST:
-    gen_expr(node->lhs);
-    cast(node->lhs->ty, node->ty);
+    gen_cast(node);
     return;
   case ND_MEMZERO:
     gen_mem_zero(node->var->ofs, "%rbp", node->var->ty->size);
@@ -1020,9 +997,9 @@ static void gen_expr(Node *node) {
     // respectively. We clear the upper bits here.
     if (is_integer(node->ty) && node->ty->size < 4) {
       if (node->ty->kind == TY_BOOL)
-        cast(ty_int, ty_uchar);
+        println("  %s", cast_table[getTypeId(ty_int)][getTypeId(ty_uchar)]);
       else
-        cast(ty_int, node->ty);
+        println("  %s", cast_table[getTypeId(ty_int)][getTypeId(node->ty)]);
     }
 
     // If the return type is a small struct, a value is returned
