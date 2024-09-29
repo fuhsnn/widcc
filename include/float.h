@@ -1,10 +1,22 @@
 #ifndef __STDFLOAT_H
 #define __STDFLOAT_H
 
+#include <fenv.h>
+
 #define DECIMAL_DIG 21
 #define FLT_EVAL_METHOD 0 // C11 5.2.4.2.2p9
 #define FLT_RADIX 2
-#define FLT_ROUNDS 1      // C11 5.2.4.2.2p8: to nearest
+#define FLT_ROUNDS                         \
+  ({                                       \
+    int val = -1;                          \
+    switch (fegetround()) {                \
+      case FE_TOWARDZERO: val = 0; break;  \
+      case FE_TONEAREST: val = 1; break;   \
+      case FE_UPWARD: val = 2; break;      \
+      case FE_DOWNWARD: val = 3; break;    \
+    };                                     \
+    val;                                   \
+  })
 
 #define FLT_DIG 6
 #define FLT_EPSILON 0x1p-23
