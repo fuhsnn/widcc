@@ -27,6 +27,7 @@ struct {
 
 static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
+static void gen_mem_copy(int sofs, char *sptr, int dofs, char *dptr, int sz);
 
 FMTCHK(1,2)
 static void println(char *fmt, ...) {
@@ -97,12 +98,12 @@ static void popf(void) {
 
 static void push_x87(void) {
   int offset = push_tmpstack(2);
-  println("  fstpt -%d(%%rbp)", offset);
+  gen_mem_copy(-16, "%rbp", -offset, "%rbp", 10);
 }
 
 static void pop_x87(void) {
   int offset = pop_tmpstack();
-  println("  fldt -%d(%%rbp)", offset);
+  gen_mem_copy(-offset, "%rbp", -16, "%rbp", 10);
 }
 
 // When we load a char or a short value to a register, we always
@@ -309,7 +310,7 @@ static void load(Type *ty) {
     println("  movsd (%%rax), %%xmm0");
     return;
   case TY_LDOUBLE:
-    println("  fninit; fldt (%%rax)");
+    gen_mem_copy(0, "%rax", -16, "%rbp", 10);
     return;
   }
 
@@ -332,8 +333,7 @@ static void store(Type *ty) {
     println("  movsd %%xmm0, (%%rcx)");
     return;
   case TY_LDOUBLE:
-    println("  fstpt (%%rcx)");
-    println("  fninit; fldt (%%rcx)");
+    gen_mem_copy(-16, "%rbp", 0, "%rcx", 10);
     return;
   }
 
@@ -370,6 +370,8 @@ static int getTypeId(Type *ty) {
   return U64;
 }
 
+#define LDBUF "-16(%rbp)"
+
 // The table for type casts
 static char i32i8[] = "movsbl %al, %eax";
 static char i32u8[] = "movzbl %al, %eax";
@@ -378,16 +380,16 @@ static char i32u16[] = "movzwl %ax, %eax";
 static char i32f32[] = "cvtsi2ssl %eax, %xmm0";
 static char i32i64[] = "movslq %eax, %rax";
 static char i32f64[] = "cvtsi2sdl %eax, %xmm0";
-static char i32f80[] = "push %rax; fildl (%rsp); pop %rax";
+static char i32f80[] = "mov %eax, "LDBUF"; fildl "LDBUF;
 
 static char u32f32[] = "mov %eax, %eax; cvtsi2ssq %rax, %xmm0";
 static char u32i64[] = "mov %eax, %eax";
 static char u32f64[] = "mov %eax, %eax; cvtsi2sdq %rax, %xmm0";
-static char u32f80[] = "mov %eax, %eax; push %rax; fildll (%rsp); pop %rax";
+static char u32f80[] = "mov %eax, %eax; mov %rax, "LDBUF"; fildll "LDBUF;
 
 static char i64f32[] = "cvtsi2ssq %rax, %xmm0";
 static char i64f64[] = "cvtsi2sdq %rax, %xmm0";
-static char i64f80[] = "push %rax; fildll (%rsp); pop %rax";
+static char i64f80[] = "mov %rax, "LDBUF"; fildll "LDBUF;
 
 static char u64f32[] =
   "test %rax,%rax; js 1f; pxor %xmm0,%xmm0; cvtsi2ss %rax,%xmm0; jmp 2f; "
@@ -398,8 +400,8 @@ static char u64f64[] =
   "1: mov %rax,%rdx; and $1,%eax; pxor %xmm0,%xmm0; shr %rdx; "
   "or %rax,%rdx; cvtsi2sd %rdx,%xmm0; addsd %xmm0,%xmm0; 2:";
 static char u64f80[] =
-  "push %rax; fildq (%rsp); test %rax, %rax; jns 1f;"
-  "mov $1602224128, %eax; mov %eax, 4(%rsp); fadds 4(%rsp); 1:; pop %rax";
+  "mov %rax, "LDBUF"; fildq "LDBUF"; test %rax, %rax; jns 1f;"
+  "mov $1602224128, %eax; mov %eax, "LDBUF"; fadds "LDBUF"; 1:";
 
 static char f32i8[] = "cvttss2sil %xmm0, %eax; movsbl %al, %eax";
 static char f32u8[] = "cvttss2sil %xmm0, %eax; movzbl %al, %eax";
@@ -413,7 +415,7 @@ static char f32u64[] =
   "movd %eax, %xmm1; subss %xmm1, %xmm0; cvttss2siq %xmm0, %rax; "
   "sarq $63, %rdx; andq %rdx, %rax; orq %rcx, %rax;";
 static char f32f64[] = "cvtss2sd %xmm0, %xmm0";
-static char f32f80[] = "sub $8, %rsp; movss %xmm0, (%rsp); flds (%rsp); add $8, %rsp";
+static char f32f80[] = "movss %xmm0, "LDBUF"; flds "LDBUF;
 
 static char f64i8[] = "cvttsd2sil %xmm0, %eax; movsbl %al, %eax";
 static char f64u8[] = "cvttsd2sil %xmm0, %eax; movzbl %al, %eax";
@@ -427,30 +429,26 @@ static char f64u64[] =
   "movq %rax, %xmm1; subsd %xmm1, %xmm0; cvttsd2siq %xmm0, %rax; "
   "sarq $63, %rdx; andq %rdx, %rax; orq %rcx, %rax";
 static char f64f32[] = "cvtsd2ss %xmm0, %xmm0";
-static char f64f80[] = "sub $8, %rsp; movsd %xmm0, (%rsp); fldl (%rsp); add $8, %rsp";
+static char f64f80[] = "movsd %xmm0, "LDBUF"; fldl "LDBUF;
 
-#define FROM_F80_1                                                        \
-  "sub $24, %rsp; fnstcw 14(%rsp); movzwl 14(%rsp), %eax; or $12, %ah; " \
-  "mov %ax, 12(%rsp); fldcw 12(%rsp); "
+#define SET_TRUNC_MODE "fnstcw "LDBUF"; movw "LDBUF", %cx; orb $12, 1+"LDBUF"; fldcw "LDBUF"; "
+#define RESTORE_MODE "; movw %cx, "LDBUF"; fldcw "LDBUF";"
 
-#define FROM_F80_2 " (%rsp); fldcw 14(%rsp); "
-#define FROM_F80_3 "; add $24, %rsp"
-
-static char f80i8[] = FROM_F80_1 "fistps" FROM_F80_2 "movsbl (%rsp), %eax" FROM_F80_3;
-static char f80u8[] = FROM_F80_1 "fistps" FROM_F80_2 "movzbl (%rsp), %eax" FROM_F80_3;
-static char f80i16[] = FROM_F80_1 "fistps" FROM_F80_2 "movzbl (%rsp), %eax" FROM_F80_3;
-static char f80u16[] = FROM_F80_1 "fistpl" FROM_F80_2 "movswl (%rsp), %eax" FROM_F80_3;
-static char f80i32[] = FROM_F80_1 "fistpl" FROM_F80_2 "mov (%rsp), %eax" FROM_F80_3;
-static char f80u32[] = FROM_F80_1 "fistpl" FROM_F80_2 "mov (%rsp), %eax" FROM_F80_3;
-static char f80i64[] = FROM_F80_1 "fistpq" FROM_F80_2 "mov (%rsp), %rax" FROM_F80_3;
+static char f80i8[] = SET_TRUNC_MODE "fistps "LDBUF"; movsbl "LDBUF", %eax" RESTORE_MODE;
+static char f80u8[] = SET_TRUNC_MODE "fistps "LDBUF"; movzbl "LDBUF", %eax" RESTORE_MODE;
+static char f80i16[] = SET_TRUNC_MODE "fistps "LDBUF"; movzbl "LDBUF", %eax" RESTORE_MODE;
+static char f80u16[] = SET_TRUNC_MODE "fistpl "LDBUF"; movswl "LDBUF", %eax" RESTORE_MODE;
+static char f80i32[] = SET_TRUNC_MODE "fistpl "LDBUF"; mov "LDBUF", %eax" RESTORE_MODE;
+static char f80u32[] = SET_TRUNC_MODE "fistpl "LDBUF"; mov "LDBUF", %eax" RESTORE_MODE;
+static char f80i64[] = SET_TRUNC_MODE "fistpq "LDBUF"; mov "LDBUF", %rax" RESTORE_MODE;
 static char f80u64[] =
-  "sub $16, %rsp; movl $0x5f000000, 12(%rsp); flds 12(%rsp); fucomi %st(1), %st; setbe %al;"
-  "fldz; fcmovbe %st(1), %st; fstp %st(1); fsubrp %st, %st(1); fnstcw 4(%rsp);"
-  "movzwl 4(%rsp), %ecx; orl $3072, %ecx; movw %cx, 6(%rsp); fldcw 6(%rsp);"
-  "fistpll 8(%rsp); fldcw 4(%rsp); shlq $63, %rax; xorq 8(%rsp), %rax; add $16, %rsp";
+  "movl $0x5f000000, "LDBUF"; flds "LDBUF"; fucomi %st(1), %st; setbe %dl;"
+  "fldz; fcmovbe %st(1), %st; fstp %st(1); fsubrp %st, %st(1);"
+  SET_TRUNC_MODE "fistpq "LDBUF"; mov "LDBUF", %rax" RESTORE_MODE
+  "shlq $63, %rdx; xor %rdx, %rax";
 
-static char f80f32[] = "sub $8, %rsp; fstps (%rsp); movss (%rsp), %xmm0; add $8, %rsp";
-static char f80f64[] = "sub $8, %rsp; fstpl (%rsp); movsd (%rsp), %xmm0; add $8, %rsp";
+static char f80f32[] = "fstps "LDBUF"; movss "LDBUF", %xmm0";
+static char f80f64[] = "fstpl "LDBUF"; movsd "LDBUF", %xmm0";
 
 static char *cast_table[][11] = {
   // i8   i16     i32     i64     u8     u16     u32     u64     f32     f64     f80
@@ -481,10 +479,16 @@ static void gen_cast(Node *node) {
   if (node->ty->kind == TY_VOID)
     return;
 
+  if (node->lhs->ty->kind == TY_LDOUBLE)
+    println("  fldt -16(%%rbp)");
+
   int t1 = getTypeId(node->lhs->ty);
   int t2 = getTypeId(node->ty);
   if (cast_table[t1][t2])
     println("  %s", cast_table[t1][t2]);
+
+  if (node->ty->kind == TY_LDOUBLE)
+    println("  fstpt -16(%%rbp)");
 }
 
 // Structs or unions equal or smaller than 16 bytes are passed
@@ -794,15 +798,12 @@ static void gen_expr(Node *node) {
       return;
     }
     case TY_LDOUBLE: {
-      union { long double f80; uint64_t u64[2]; } u;
+      union { long double f80; int32_t i32[3]; } u;
       memset(&u, 0, sizeof(u));
       u.f80 = node->fval;
-      println("  movq $%lu, %%rax", u.u64[0]);
-      println("  movw $%lu, %%dx", u.u64[1]);
-      println("  push %%rdx");
-      println("  push %%rax");
-      println("  fninit; fldt (%%rsp)");
-      println("  add $16, %%rsp");
+      println("  movl $%"PRIi32", -16(%%rbp)", u.i32[0]);
+      println("  movl $%"PRIi32", -12(%%rbp)", u.i32[1]);
+      println("  movw $%"PRIi32", -8(%%rbp)", u.i32[2]);
       return;
     }
     }
@@ -830,7 +831,9 @@ static void gen_expr(Node *node) {
       println("  xorpd %%xmm1, %%xmm0");
       return;
     case TY_LDOUBLE:
+      println("  fldt -16(%%rbp)");
       println("  fchs");
+      println("  fstpt -16(%%rbp)");
       return;
     }
 
@@ -1000,6 +1003,7 @@ static void gen_expr(Node *node) {
         println("  %s", cast_table[getTypeId(ty_int)][getTypeId(ty_uchar)]);
       else
         println("  %s", cast_table[getTypeId(ty_int)][getTypeId(node->ty)]);
+      return;
     }
 
     // If the return type is a small struct, a value is returned
@@ -1007,6 +1011,12 @@ static void gen_expr(Node *node) {
     if (node->ret_buffer && node->ty->size <= 16) {
       copy_ret_buffer(node->ret_buffer);
       println("  lea %d(%%rbp), %%rax", node->ret_buffer->ofs);
+      return;
+    }
+
+    if (node->ty->kind == TY_LDOUBLE) {
+      println("  fstpt -16(%%rbp)");
+      return;
     }
     return;
   }
@@ -1023,7 +1033,7 @@ static void gen_expr(Node *node) {
     println("  movl $%d, 4(%%rax)", va_fp_start);
     println("  lea %d(%%rbp), %%rdx", va_st_start);
     println("  movq %%rdx, 8(%%rax)");
-    println("  lea -176(%%rbp), %%rdx");
+    println("  lea -192(%%rbp), %%rdx");
     println("  movq %%rdx, 16(%%rax)");
     return;
   }
@@ -1144,20 +1154,26 @@ static void gen_expr(Node *node) {
     gen_expr(node->lhs);
     push_x87();
     gen_expr(node->rhs);
+    println("  fldt -16(%%rbp)");
     pop_x87();
+    println("  fldt -16(%%rbp)");
 
     switch (node->kind) {
     case ND_ADD:
       println("  faddp");
+      println("  fstpt -16(%%rbp)");
       return;
     case ND_SUB:
       println("  fsubp");
+      println("  fstpt -16(%%rbp)");
       return;
     case ND_MUL:
       println("  fmulp");
+      println("  fstpt -16(%%rbp)");
       return;
     case ND_DIV:
       println("  fdivp");
+      println("  fstpt -16(%%rbp)");
       return;
     case ND_EQ:
     case ND_NE:
@@ -1378,6 +1394,9 @@ static void gen_stmt(Node *node) {
       Type *ty = node->lhs->ty;
 
       switch (ty->kind) {
+      case TY_LDOUBLE:
+        println("  fldt -16(%%rbp)");
+        break;
       case TY_STRUCT:
       case TY_UNION:
         if (ty->size <= 16)
@@ -1581,7 +1600,7 @@ static void emit_text(Obj *prog) {
     long stack_alloc_loc = ftell(output_file);
     println("                             ");
 
-    lvar_stk_sz = 0;
+    lvar_stk_sz = 16;
 
     // Save arg registers if function is variadic
     if (fn->ty->is_variadic) {
@@ -1591,25 +1610,25 @@ static void emit_text(Obj *prog) {
       lvar_stk_sz += 176;
 
       switch (gp_count) {
-      case 0: println("  movq %%rdi, -176(%%rbp)");
-      case 1: println("  movq %%rsi, -168(%%rbp)");
-      case 2: println("  movq %%rdx, -160(%%rbp)");
-      case 3: println("  movq %%rcx, -152(%%rbp)");
-      case 4: println("  movq %%r8, -144(%%rbp)");
-      case 5: println("  movq %%r9, -136(%%rbp)");
+      case 0: println("  movq %%rdi, -192(%%rbp)");
+      case 1: println("  movq %%rsi, -184(%%rbp)");
+      case 2: println("  movq %%rdx, -176(%%rbp)");
+      case 3: println("  movq %%rcx, -168(%%rbp)");
+      case 4: println("  movq %%r8, -160(%%rbp)");
+      case 5: println("  movq %%r9, -152(%%rbp)");
       }
       if (fp_count < 8) {
         println("  test %%al, %%al");
         println("  je 1f");
         switch (fp_count) {
-        case 0: println("  movaps %%xmm0, -128(%%rbp)");
-        case 1: println("  movaps %%xmm1, -112(%%rbp)");
-        case 2: println("  movaps %%xmm2, -96(%%rbp)");
-        case 3: println("  movaps %%xmm3, -80(%%rbp)");
-        case 4: println("  movaps %%xmm4, -64(%%rbp)");
-        case 5: println("  movaps %%xmm5, -48(%%rbp)");
-        case 6: println("  movaps %%xmm6, -32(%%rbp)");
-        case 7: println("  movaps %%xmm7, -16(%%rbp)");
+        case 0: println("  movaps %%xmm0, -144(%%rbp)");
+        case 1: println("  movaps %%xmm1, -128(%%rbp)");
+        case 2: println("  movaps %%xmm2, -112(%%rbp)");
+        case 3: println("  movaps %%xmm3, -96(%%rbp)");
+        case 4: println("  movaps %%xmm4, -80(%%rbp)");
+        case 5: println("  movaps %%xmm5, -64(%%rbp)");
+        case 6: println("  movaps %%xmm6, -48(%%rbp)");
+        case 7: println("  movaps %%xmm7, -32(%%rbp)");
         }
         println("1:");
       }
