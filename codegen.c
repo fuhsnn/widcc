@@ -470,7 +470,8 @@ static char *cast_table[][11] = {
 static void gen_cast(Node *node) {
   if (node->ty->kind == TY_BOOL) {
     Node zero = {.kind = ND_NUM, .ty = node->lhs->ty, .tok = node->tok};
-    Node expr = {.kind = ND_NE, .lhs = node->lhs, .rhs = &zero, .ty = ty_int, .tok = node->tok};
+    Node expr = {.kind = ND_NE, .lhs = node->lhs, .rhs = &zero, .tok = node->tok};
+    add_type(&expr);
     gen_expr(&expr);
     return;
   }
