@@ -64,7 +64,6 @@ static Macro *locked_macros;
 static HashMap macros;
 static CondIncl *cond_incl;
 static HashMap pragma_once;
-static int include_next_idx;
 static HashMap include_guards;
 
 static Token *preprocess2(Token *tok);
@@ -779,7 +778,7 @@ static bool expand_macro(Token **rest, Token *tok) {
   return true;
 }
 
-char *search_include_paths(char *filename) {
+static char *search_include_paths3(char *filename, int *incl_no) {
   if (filename[0] == '/')
     return filename;
 
@@ -794,15 +793,30 @@ char *search_include_paths(char *filename) {
     if (!file_exists(path))
       continue;
     hashmap_put(&cache, filename, path);
-    include_next_idx = i + 1;
+    if (incl_no)
+      *incl_no = i;
     return path;
   }
   return NULL;
 }
 
-static char *search_include_next(char *filename) {
-  for (; include_next_idx < include_paths.len; include_next_idx++) {
-    char *path = format("%s/%s", include_paths.data[include_next_idx], filename);
+static char *search_include_paths2(char *filename, Token *start, bool is_dquote, int *incl_no) {
+  if (filename[0] != '/' && is_dquote) {
+    char *path = format("%s/%s", dirname(strdup(start->file->name)), filename);
+    if (file_exists(path)) {
+      return path;
+    }
+  }
+  return search_include_paths3(filename, incl_no);
+}
+
+char *search_include_paths(char *filename) {
+  return search_include_paths3(filename, NULL);
+}
+
+static char *search_include_next(char *filename, int *idx) {
+  for (; *idx < include_paths.len; (*idx)++) {
+    char *path = format("%s/%s", include_paths.data[*idx], filename);
     if (file_exists(path))
       return path;
   }
@@ -848,7 +862,7 @@ static char *read_include_filename(Token *tok, bool *is_dquote) {
   error_tok(tok, "expected a filename");
 }
 
-static Token *include_file(Token *tok, char *path, Token *filename_tok) {
+static Token *include_file(Token *tok, char *path, Token *filename_tok, int *incl_no) {
   // Check for "#pragma once"
   if (hashmap_get(&pragma_once, path))
     return tok;
@@ -858,7 +872,7 @@ static Token *include_file(Token *tok, char *path, Token *filename_tok) {
     return tok;
 
   Token *end = NULL;
-  Token *start = tokenize_file(path, &end);
+  Token *start = tokenize_file(path, &end, incl_no);
   if (!start)
     error_tok(filename_tok, "%s: cannot open file: %s", path, strerror(errno));
   if (!end)
@@ -904,7 +918,7 @@ static void read_line_marker(Token **rest, Token *tok) {
   if (tok->kind != TK_STR)
     error_tok(tok, "filename expected");
 
-  start->file->display_file = add_input_file(tok->str, NULL, true);
+  start->file->display_file = add_input_file(tok->str, NULL, NULL);
 }
 
 static void add_loc_info(Token *tok) {
@@ -952,25 +966,22 @@ static Token *directives(Token **cur, Token *start) {
   if (equal(tok, "include")) {
     bool is_dquote;
     char *filename = read_include_filename(split_line(&tok, tok->next), &is_dquote);
-    if (filename[0] != '/' && is_dquote) {
-      char *path = format("%s/%s", dirname(strdup(start->file->name)), filename);
-      if (file_exists(path)) {
-        tok = include_file(tok, path, start->next->next);
-        return tok;
-      }
-    }
-
-    char *path = search_include_paths(filename);
-    tok = include_file(tok, path ? path : filename, start->next->next);
-    return tok;
+    int incl_no = -1;
+    char *path = search_include_paths2(filename, start, is_dquote, &incl_no);
+    return include_file(tok, path ? path : filename, start->next->next, &incl_no);
   }
 
   if (equal(tok, "include_next")) {
-    bool ignore;
-    char *filename = read_include_filename(split_line(&tok, tok->next), &ignore);
-    char *path = search_include_next(filename);
-    tok = include_file(tok, path ? path : filename, start->next->next);
-    return tok;
+    if (!tok->file || !tok->file->is_input)
+      error_tok(tok, "cannot infer #include_next search path");
+
+    int incl_no = tok->file->incl_no + 1;
+    char *filename = read_include_filename(split_line(&tok, tok->next), &(bool){0});
+    char *path = search_include_next(filename, &incl_no);
+    if (!path)
+      error_tok(start->next->next, "%s: cannot open file: %s", filename, strerror(errno));
+
+    return include_file(tok, path, start->next->next, &incl_no);
   }
 
   if (equal(tok, "define")) {
@@ -1231,14 +1242,7 @@ static Token *has_include_macro(Token *start) {
 
   bool is_dquote;
   char *filename = read_include_filename(split_paren(&tok, tok), &is_dquote);
-
-  bool found = false;
-  if (filename[0] != '/' && is_dquote) {
-    char *path = format("%s/%s", dirname(strdup(start->file->name)), filename);
-    found = file_exists(path);
-  }
-  if (!found)
-    found = search_include_paths(filename);
+  bool found = search_include_paths2(filename, start, is_dquote, NULL);
 
   pop_macro_lock_until(start, tok);
   Token *tok2 = new_num_token(found, start);
