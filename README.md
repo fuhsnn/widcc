@@ -32,7 +32,7 @@ mkdir curl/cmakebuild
 cd curl/cmakebuild
 cmake ../ -DCMAKE_C_COMPILER=/full/path/to/widcc -DCMAKE_C_FLAGS=-fPIC
 make -j
-make quiet-test -j
+make test-quiet -j
 ```
 `gcc 4.7.4`
 ```
