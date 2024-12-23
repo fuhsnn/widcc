@@ -828,8 +828,11 @@ static char *read_include_filename(Token *tok, bool *is_dquote) {
   // Pattern 3: #include FOO
   // In this case FOO must be macro-expanded to either
   // a single string token or a sequence of "<" ... ">".
-  if (tok->kind == TK_IDENT)
+  if (tok->kind == TK_IDENT) {
     tok = preprocess2(tok);
+    for (Token *t = tok->next; t->kind != TK_EOF; t = t->next)
+      t->has_space = false;
+  }
 
   // Pattern 1: #include "foo.h"
   if (tok->kind == TK_STR) {
