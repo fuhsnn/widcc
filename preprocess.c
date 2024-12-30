@@ -181,23 +181,11 @@ static Token *skip_cond_incl(Token *tok) {
 
 // Double-quote a given string and returns it.
 static char *quote_string(char *str) {
-  int bufsize = 3;
-  for (int i = 0; str[i]; i++) {
-    if (str[i] == '\\' || str[i] == '"')
-      bufsize++;
-    bufsize++;
-  }
-
-  char *buf = calloc(1, bufsize);
-  char *p = buf;
-  *p++ = '"';
-  for (int i = 0; str[i]; i++) {
-    if (str[i] == '\\' || str[i] == '"')
-      *p++ = '\\';
-    *p++ = str[i];
-  }
-  *p++ = '"';
-  *p++ = '\0';
+  size_t len = strlen(str);
+  char *buf = malloc(len + 3);
+  memcpy(buf + 1, str, len);
+  buf[0] = buf[len + 1] = '"';
+  buf[len + 2] = '\0';
   return buf;
 }
 
@@ -535,14 +523,18 @@ static MacroArg *find_arg(Token **rest, Token *tok, MacroArg *args) {
 }
 
 // Concatenates all tokens in `tok` and returns a new string.
-static char *join_tokens(Token *tok, Token *end) {
+static char *join_tokens(Token *tok, Token *end, bool add_slash) {
   // Compute the length of the resulting token.
   int len = 1;
-  for (Token *t = tok; t != end && t->kind != TK_EOF; t = t->next) {
-    if (t->kind == TK_PMARK)
-      continue;
+  for (Token *t = tok; t != end; t = t->next) {
     if ((t->has_space || t->at_bol) && len != 1)
       len++;
+
+    if (add_slash && (t->kind == TK_STR || t->kind == TK_NUM))
+      for (int i = 0; i < t->len; i++)
+        if (t->loc[i] == '\\' || t->loc[i] == '"')
+          len++;
+
     len += t->len;
   }
 
@@ -550,26 +542,37 @@ static char *join_tokens(Token *tok, Token *end) {
 
   // Copy token texts.
   int pos = 0;
-  for (Token *t = tok; t != end && t->kind != TK_EOF; t = t->next) {
-    if (t->kind == TK_PMARK)
-      continue;
+  for (Token *t = tok; t != end; t = t->next) {
     if ((t->has_space || t->at_bol) && pos != 0)
       buf[pos++] = ' ';
-    strncpy(buf + pos, t->loc, t->len);
+
+    if (add_slash && (t->kind == TK_STR || t->kind == TK_NUM)) {
+      for (int i = 0; i < t->len; i++) {
+        if (t->loc[i] == '\\' || t->loc[i] == '"')
+          buf[pos++] = '\\';
+        buf[pos++] = t->loc[i];
+      }
+      continue;
+    }
+
+    memcpy(buf + pos, t->loc, t->len);
     pos += t->len;
   }
   buf[pos] = '\0';
   return buf;
 }
 
-// Concatenates all tokens in `arg` and returns a new string token.
+// Concatenates all tokens and returns a new string token.
 // This function is used for the stringizing operator (#).
-static Token *stringize(Token *hash, Token *arg) {
-  // Create a new string token. We need to set some value to its
-  // source location for error reporting function, so we use a macro
-  // name token as a template.
-  char *s = join_tokens(arg, NULL);
-  return new_str_token(s, hash);
+static Token *stringize(Token *hash, Token *tok) {
+  Token head = {0};
+  Token *cur = &head;
+  for (; tok->kind != TK_EOF; tok = tok->next)
+    if (tok->kind != TK_PMARK)
+      cur = cur->next = tok;
+  cur->next = tok;
+
+  return new_str_token(join_tokens(head.next, tok, true), hash);
 }
 
 static void align_token(Token *tok1, Token *tok2) {
@@ -859,7 +862,7 @@ static char *read_include_filename(Token *tok, bool *is_dquote) {
 
     *is_dquote = false;
     skip_line(tok->next);
-    return join_tokens(start->next, tok);
+    return join_tokens(start->next, tok, false);
   }
 
   error_tok(tok, "expected a filename");
