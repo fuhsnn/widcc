@@ -39,6 +39,20 @@ static char *output_file;
 static StringArray input_paths;
 static StringArray tmpfiles;
 
+#if defined(__SANITIZE_ADDRESS__)
+#define USE_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define USE_ASAN 1
+#endif
+#endif
+
+#if USE_ASAN
+const char *__asan_default_options(void) {
+  return "detect_leaks=0";
+}
+#endif
+
 static void usage(int status) {
   fprintf(stderr, "widcc [ -o <path> ] <file>\n");
   exit(status);
