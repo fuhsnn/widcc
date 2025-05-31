@@ -2795,10 +2795,10 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
 
 static void attr_packed(Token *tok, Type *ty) {
   for (Token *lst = tok->attr_next; lst; lst = lst->attr_next) {
-    if (equal(lst, "packed") || equal(lst, "__packed__")) {
-      ty->is_packed = true;
-      continue;
-    }
+    // if (equal(lst, "packed") || equal(lst, "__packed__")) {
+    //   ty->is_packed = true;
+    //   continue;
+    // }
   }
 }
 

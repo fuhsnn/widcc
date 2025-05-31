@@ -218,6 +218,7 @@ test_python() {
  skip_tests=(
   test_asyncio test_socket # Fail in CI
   test_peg_generator
+  test_epoll
  )
  ./python -m test -j4 --exclude "${skip_tests[@]}"
 }

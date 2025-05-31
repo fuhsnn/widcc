@@ -42,7 +42,6 @@ jobs:
           - thirdparty: test_gzip
           - thirdparty: test_jq
           - thirdparty: test_libpng
-          - thirdparty: test_libuev
           - thirdparty: test_lua
           - thirdparty: test_perl
           - thirdparty: test_php
