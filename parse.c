@@ -24,7 +24,7 @@ typedef struct {
   Obj *var;
   Type *type_def;
   Type *enum_ty;
-  int enum_val;
+  int64_t enum_val;
 } VarScope;
 
 // Variable attributes such as typedef or extern.
@@ -142,6 +142,7 @@ static Node *parse_typedef(Token **rest, Token *tok, Type *basety);
 static Obj *func_prototype(Type *ty, VarAttr *attr, Token *name);
 static Token *global_declaration(Token *tok, Type *basety, VarAttr *attr);
 static Node *compute_vla_size(Type *ty, Token *tok);
+static int64_t const_expr2(Token **rest, Token *tok, Type **ty);
 
 static int align_down(int n, int align) {
   return align_to(n - align + 1, align);
@@ -794,47 +795,110 @@ static bool is_end(Token *tok) {
   return equal(tok, "}") || (equal(tok, ",") && equal(tok->next, "}"));
 }
 
-// enum-specifier = ident? "{" enum-list? "}"
-//                | ident ("{" enum-list? "}")?
-//
-// enum-list      = ident ("=" num)? ("," ident ("=" num)?)* ","?
 static Type *enum_specifier(Token **rest, Token *tok) {
-  Type *ty = enum_type();
-
-  // Read a struct tag.
+  // Read a tag.
   Token *tag = NULL;
   if (tok->kind == TK_IDENT) {
     tag = tok;
     tok = tok->next;
   }
 
+  Type *ty = NULL;
+  if (consume(&tok, tok, ":"))
+    ty = typename(&tok, tok);
+
   if (tag && !equal(tok, "{")) {
-    Type *ty = find_tag(tag);
-    if (!ty)
-      error_tok(tag, "unknown enum type");
-    if (ty->kind != TY_ENUM)
-      error_tok(tag, "not an enum tag");
     *rest = tok;
+    Type *ty2 = find_tag(tag);
+    if (ty2) {
+      if (ty2->kind == TY_STRUCT || ty2->kind == TY_UNION)
+        error_tok(tag, "not an enum tag");
+      return ty2;
+    }
+    if (!ty)
+      ty = new_type(TY_ENUM, -1, 1);
+    push_tag_scope(tag, ty);
     return ty;
   }
-
   tok = skip(tok, "{");
 
-  // Read an enum-list.
-  int val = 0;
+  if (tag) {
+    Type *ty2 = hashmap_get2(&scope->tags, tag->loc, tag->len);
+    if (ty2) {
+      if (ty2->kind == TY_STRUCT || ty2->kind == TY_UNION)
+        error_tok(tag, "not an enum tag");
+      if ((!ty && ty2->kind != TY_ENUM) ||
+        (ty && (ty->kind != ty2->kind || ty->is_unsigned != ty2->is_unsigned)))
+        error_tok(tag, "enum redeclared with incompatible type");
+      ty = ty2;
+    }
+  }
+  if (!ty)
+    ty = new_type(TY_ENUM, -1, 1);
+
+  bool has_type = (ty->kind != TY_ENUM);
+  if (!has_type) {
+    *ty = *ty_uint;
+    ty->is_unspec_enum = true;
+  }
+  bool need_u32 = false;
+  bool need_u64 = false;
+  bool need_i64 = false;
+  bool been_neg = false;
+
+  uint64_t val = 0;
+  bool is_neg = false;
+  bool is_ovf = false;
   bool first = true;
   for (; comma_list(rest, &tok, "}", !first); first = false) {
     char *name = get_ident(tok);
     tok = tok->next;
 
-    if (equal(tok, "="))
-      val = const_expr(&tok, tok->next);
+    if (consume(&tok, tok, "=")) {
+      Type *val_ty = NULL;
+      val = const_expr2(&tok, tok, &val_ty);
 
+      if (!val_ty->is_unsigned && (int64_t)val < 0) {
+        need_i64 = (int64_t)val < INT32_MIN;
+        is_neg = been_neg = true;
+      }
+    } else if (is_ovf) {
+      error_tok(tok, "enum value overflowed");
+    }
+
+    if (!is_neg && (val > INT32_MAX)) {
+      need_u64 = val > UINT32_MAX;
+      need_u32 = true;
+    }
     VarScope *sc = push_scope(name);
     sc->enum_ty = ty;
     sc->enum_val = val++;
+    is_ovf = !is_neg && val == 0;
+    is_neg = (int64_t)val < 0;
   }
 
+  if (first)
+    error_tok(tok, "empty enum specifier");
+
+  if (has_type) {
+    if ((ty->is_unsigned && (been_neg || (ty->size < 8 && need_u64))) ||
+      (!ty->is_unsigned && (need_u64 || (ty->size < 8 && (need_u32 || need_i64)))))
+      error_tok(tok, "enum value out of type range");
+  } else {
+    Type *enum_ty;
+    bool is_unspec = false;
+    if (been_neg)
+      enum_ty = (need_u64 || need_u32 || need_i64) ? ty_long : ty_int;
+    else if (need_u64)
+      enum_ty = ty_ulong;
+    else if (need_u32)
+      enum_ty = ty_uint;
+    else
+      enum_ty = ty_uint, is_unspec = true;
+
+    *ty = *enum_ty;
+    ty->is_unspec_enum = is_unspec;
+  }
   if (tag)
     push_tag_scope(tag, ty);
   return ty;
@@ -2150,12 +2214,18 @@ bool is_const_expr(Node *node, int64_t *val) {
   return !failed;
 }
 
-int64_t const_expr(Token **rest, Token *tok) {
+static int64_t const_expr2(Token **rest, Token *tok, Type **ty) {
   Node *node = conditional(rest, tok);
   add_type(node);
   if (!is_integer(node->ty))
     error_tok(tok, "constant expression not integer");
+  if (ty)
+    *ty = node->ty;
   return eval(node);
+}
+
+int64_t const_expr(Token **rest, Token *tok) {
+  return const_expr2(rest, tok, NULL);
 }
 
 static long double eval_double(Node *node) {
@@ -3270,8 +3340,11 @@ static Node *primary(Token **rest, Token *tok) {
     if (sc) {
       if (sc->var)
         return new_var_node(sc->var, tok);
-      if (sc->enum_ty)
-        return new_num(sc->enum_val, tok);
+      if (sc->enum_ty) {
+        Node *n = new_num(sc->enum_val, tok);
+        n->ty = (sc->enum_ty->is_unspec_enum) ? ty_int : sc->enum_ty;
+        return n;
+      }
     }
 
     // [https://www.sigbus.info/n1570#6.4.2.2p1] "__func__" is
