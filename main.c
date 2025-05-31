@@ -533,31 +533,52 @@ static void run_cc1(int argc, char **argv, char *input, char *output, char *opti
   run_subprocess(args);
 }
 
+static void print_linemarker(FILE *out, Token *tok) {
+  char *name = tok->file->name;
+  if (!strcmp(name, "-"))
+    name = "<stdin>";
+  fprintf(out, "\n# %d \"%s\"\n", tok->line_no, name);
+}
+
 // Print tokens to stdout. Used for -E.
 static void print_tokens(Token *tok, char *path) {
   FILE *out = open_file(path);
 
-  int line = 1;
+  int line = 0;
   File *markerfile = NULL;
+  tok->at_bol = false;
 
   for (; tok->kind != TK_EOF; tok = tok->next) {
-    Token *orig = tok->origin ? tok->origin : tok;
-    if (!opt_P && markerfile != orig->file) {
-      markerfile = orig->file;
-      char *name = orig->file->name;
-      if (!strcmp(name, "-"))
-        name = "<stdin>";
-      fprintf(out, "\n# %d \"%s\"\n", orig->line_no, name);
-    }
+    if (!opt_P) {
+      Token *orig = tok->origin ? tok->origin : tok;
 
-    if (line > 1 && tok->at_bol)
-      fprintf(out, "\n");
-    if (tok->has_space && !tok->at_bol)
+      if (markerfile != orig->file) {
+        markerfile = orig->file;
+        print_linemarker(out, orig);
+      } else {
+        int diff = orig->line_no - line;
+        if (diff > 0 && diff <= 8)
+          while (line++ < orig->line_no)
+            fprintf(out, "\n");
+        else if (diff)
+          print_linemarker(out, orig);
+      }
+      line = orig->line_no;
+    } else {
+      if (tok->at_bol)
+        fprintf(out, "\n");
+    }
+    if (tok->has_space)
       fprintf(out, " ");
+
     fprintf(out, "%.*s", tok->len, tok->loc);
-    line++;
   }
   fprintf(out, "\n");
+
+  if (out == stdout)
+    fflush(out);
+  else
+    fclose(out);
 }
 
 static bool in_std_include_path(char *path) {
