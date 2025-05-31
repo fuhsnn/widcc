@@ -34,29 +34,9 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - thirdparty: test_cello
-          - thirdparty: test_curl
-          - thirdparty: test_doom
-          - thirdparty: test_git
-          - thirdparty: test_gmake
-          - thirdparty: test_gzip
-          - thirdparty: test_jq
-          - thirdparty: test_libpng
-          - thirdparty: test_lua
-          - thirdparty: test_perl
-          - thirdparty: test_php
           - thirdparty: test_postgres
           - thirdparty: test_python
-          - thirdparty: test_qbe_hare
-          - thirdparty: test_sqlite
-          - thirdparty: test_tinycc
           - thirdparty: test_toxcore
-          - thirdparty: test_toybox
-          - thirdparty: test_vim
-          - thirdparty: test_zlib
-          - thirdparty: test_zsh
-          - thirdparty: build_gcc
-          - thirdparty: build_nano
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4

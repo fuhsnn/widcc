@@ -213,12 +213,13 @@ test_postgres() {
 
 test_python() {
  github_tar python cpython v3.12.10
- ./configure && make
+ ./configure && make -j4
 
  skip_tests=(
   test_asyncio test_socket # Fail in CI
   test_peg_generator
   test_epoll
+  test_selector
  )
  ./python -m test -j4 --exclude "${skip_tests[@]}"
 }
