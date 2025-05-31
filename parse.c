@@ -2793,19 +2793,9 @@ static void struct_members(Token **rest, Token *tok, Type *ty) {
   ty->members = head.next;
 }
 
-static void attr_packed(Token *tok, Type *ty) {
-  for (Token *lst = tok->attr_next; lst; lst = lst->attr_next) {
-    // if (equal(lst, "packed") || equal(lst, "__packed__")) {
-    //   ty->is_packed = true;
-    //   continue;
-    // }
-  }
-}
-
 // struct-union-decl = attribute? ident? ("{" struct-members)?
 static Type *struct_union_decl(Token **rest, Token *tok, TypeKind kind) {
   Type *ty = new_type(kind, -1, 1);
-  attr_packed(tok, ty);
 
   // Read a tag.
   Token *tag = NULL;
@@ -2829,7 +2819,6 @@ static Type *struct_union_decl(Token **rest, Token *tok, TypeKind kind) {
   // Construct a struct object.
   struct_members(&tok, tok, ty);
 
-  attr_packed(tok, ty);
   *rest = tok;
 
   if (kind == TY_STRUCT)

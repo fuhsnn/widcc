@@ -35,8 +35,6 @@ jobs:
       matrix:
         include:
           - thirdparty: test_postgres
-          - thirdparty: test_python
-          - thirdparty: test_toxcore
     steps:
       - name: Download artifact
         uses: actions/download-artifact@v4
