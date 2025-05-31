@@ -385,6 +385,7 @@ struct Type {
   int size;           // sizeof() value
   int align;          // alignment
   bool is_unsigned;   // unsigned or signed
+  bool is_unspec_enum;
   Type *origin;       // for type compatibility check
 
   // Pointer-to or array-of type. We intentionally use the same member
@@ -464,7 +465,6 @@ Type *pointer_to(Type *base);
 Type *func_type(Type *return_ty);
 Type *array_of(Type *base, int size);
 Type *vla_of(Type *base, Node *expr);
-Type *enum_type(void);
 void add_type(Node *node);
 Type *new_type(TypeKind kind, int size, int align);
 
