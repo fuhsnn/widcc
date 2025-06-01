@@ -66,6 +66,8 @@ static CondIncl *cond_incl;
 static HashMap pragma_once;
 static HashMap include_guards;
 
+static char *base_file;
+
 static Token *preprocess2(Token *tok);
 static Macro *find_macro(Token *tok);
 static bool expand_macro(Token **rest, Token *tok);
@@ -1304,48 +1306,36 @@ static char *format_time(struct tm *tm) {
 
 void init_macros(void) {
   // Define predefined macros
-  define_macro("_LP64", "1");
-  define_macro("__BYTE_ORDER__", "1234");
-  define_macro("__C99_MACRO_WITH_VA_ARGS", "1");
-  define_macro("__ELF__", "1");
-  define_macro("__LP64__", "1");
-  define_macro("__ORDER_BIG_ENDIAN__", "4321");
-  define_macro("__ORDER_LITTLE_ENDIAN__", "1234");
-  define_macro("__SIZEOF_DOUBLE__", "8");
-  define_macro("__SIZEOF_FLOAT__", "4");
-  define_macro("__SIZEOF_INT__", "4");
-  define_macro("__SIZEOF_LONG_DOUBLE__", "8");
-  define_macro("__SIZEOF_LONG_LONG__", "8");
-  define_macro("__SIZEOF_LONG__", "8");
-  define_macro("__SIZEOF_POINTER__", "8");
-  define_macro("__SIZEOF_PTRDIFF_T__", "8");
-  define_macro("__SIZEOF_SHORT__", "2");
-  define_macro("__SIZEOF_SIZE_T__", "8");
-  define_macro("__SIZE_TYPE__", "unsigned long");
   define_macro("__STDC_HOSTED__", "1");
   define_macro("__STDC_NO_ATOMICS__", "1");
   define_macro("__STDC_NO_COMPLEX__", "1");
   define_macro("__STDC_UTF_16__", "1");
   define_macro("__STDC_UTF_32__", "1");
   define_macro("__STDC__", "1");
+
+  define_macro("__C99_MACRO_WITH_VA_ARGS", "1");
   define_macro("__USER_LABEL_PREFIX__", "");
+
   define_macro("__alignof__", "_Alignof");
-  define_macro("__amd64", "1");
-  define_macro("__amd64__", "1");
   define_macro("__const__", "const");
-  define_macro("__gnu_linux__", "1");
   define_macro("__inline__", "inline");
-  define_macro("__linux", "1");
-  define_macro("__linux__", "1");
   define_macro("__signed__", "signed");
-  define_macro("__widcc__", "1");
+  define_macro("__volatile__", "volatile");
+
+  define_macro("unix", "1");
   define_macro("__unix", "1");
   define_macro("__unix__", "1");
-  define_macro("__volatile__", "volatile");
+
+  define_macro("__BYTE_ORDER__", "1234");
+  define_macro("__ORDER_BIG_ENDIAN__", "4321");
+  define_macro("__ORDER_LITTLE_ENDIAN__", "1234");
+
+  define_macro("__amd64", "1");
+  define_macro("__amd64__", "1");
   define_macro("__x86_64", "1");
   define_macro("__x86_64__", "1");
-  define_macro("linux", "1");
-  define_macro("unix", "1");
+
+  define_macro("__widcc__", "1");
 
   add_builtin("__FILE__", file_macro);
   add_builtin("__LINE__", line_macro);
@@ -1500,7 +1490,9 @@ static Token *preprocess3(Token *tok) {
 }
 
 // Entry point function of the preprocessor.
-Token *preprocess(Token *tok) {
+Token *preprocess(Token *tok, char *input_file) {
+  base_file = input_file;
+
   tok = preprocess2(tok);
   if (cond_incl)
     error_tok(cond_incl->tok, "unterminated conditional directive");

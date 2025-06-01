@@ -17,7 +17,6 @@ static int vla_base_ofs;
 static int rtn_ptr_ofs;
 static int lvar_stk_sz;
 static int peak_stk_usage;
-bool dont_reuse_stack;
 
 struct {
   int *data;
@@ -28,6 +27,14 @@ struct {
 static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
 static void gen_mem_copy(int sofs, char *sptr, int dofs, char *dptr, int sz);
+
+FMTCHK(1,2)
+static void print(char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  vfprintf(output_file, fmt, ap);
+  va_end(ap);
+}
 
 FMTCHK(1,2)
 static void println(char *fmt, ...) {
@@ -43,6 +50,11 @@ static int count(void) {
   return i++;
 }
 
+static bool use_rip(Obj *var) {
+  return !(opt_fpic || opt_fpie) || var->is_static ||
+    (opt_fpie && (var->ty->kind != TY_FUNC || var->is_definition));
+}
+
 static int push_tmpstack(int sz) {
   if (tmp_stk.depth == tmp_stk.capacity) {
     tmp_stk.capacity += 4;
@@ -50,7 +62,7 @@ static int push_tmpstack(int sz) {
   }
 
   int offset;
-  if (dont_reuse_stack) {
+  if (!opt_reuse_stack) {
     peak_stk_usage += 8 * sz;
     offset = peak_stk_usage;
   } else {
@@ -199,62 +211,29 @@ static void gen_addr(Node *node) {
       return;
     }
 
-    if (opt_fpic) {
-      // Thread-local variable
-      if (node->var->is_tls) {
-        println("  data16 lea \"%s\"@tlsgd(%%rip), %%rdi", node->var->name);
-        println("  .value 0x6666");
-        println("  rex64");
-        println("  call __tls_get_addr@PLT");
+    // Thread-local variable
+    if (node->var->is_tls) {
+      if (opt_fpic) {
+        println("  .byte 0x66; lea \"%s\"@tlsgd(%%rip), %%rdi", node->var->name);
+        println("  .byte 0x66; rex64 call *__tls_get_addr@GOTPCREL(%%rip)");
         return;
       }
 
-      // Function or global variable
-      println("  mov \"%s\"@GOTPCREL(%%rip), %%rax", node->var->name);
-      return;
-    }
-
-    // Thread-local variable
-    if (node->var->is_tls) {
       println("  mov %%fs:0, %%rax");
-      println("  add $\"%s\"@tpoff, %%rax", node->var->name);
-      return;
-    }
-
-    // Here, we generate an absolute address of a function or a global
-    // variable. Even though they exist at a certain address at runtime,
-    // their addresses are not known at link-time for the following
-    // two reasons.
-    //
-    //  - Address randomization: Executables are loaded to memory as a
-    //    whole but it is not known what address they are loaded to.
-    //    Therefore, at link-time, relative address in the same
-    //    exectuable (i.e. the distance between two functions in the
-    //    same executable) is known, but the absolute address is not
-    //    known.
-    //
-    //  - Dynamic linking: Dynamic shared objects (DSOs) or .so files
-    //    are loaded to memory alongside an executable at runtime and
-    //    linked by the runtime loader in memory. We know nothing
-    //    about addresses of global stuff that may be defined by DSOs
-    //    until the runtime relocation is complete.
-    //
-    // In order to deal with the former case, we use RIP-relative
-    // addressing, denoted by `(%rip)`. For the latter, we obtain an
-    // address of a stuff that may be in a shared object file from the
-    // Global Offset Table using `@GOTPCREL(%rip)` notation.
-
-    // Function
-    if (node->ty->kind == TY_FUNC) {
       if (node->var->is_definition)
-        println("  lea \"%s\"(%%rip), %%rax", node->var->name);
+        println("  add $\"%s\"@tpoff, %%rax", node->var->name);
       else
-        println("  mov \"%s\"@GOTPCREL(%%rip), %%rax", node->var->name);
+        println("  add \"%s\"@gottpoff(%%rip), %%rax", node->var->name);
       return;
     }
 
-    // Global variable
-    println("  lea \"%s\"(%%rip), %%rax", node->var->name);
+    // Function or global variable
+    if (!(opt_fpic || opt_fpie))
+      println("  movl $\"%s\", %%eax", node->var->name);
+    else if (use_rip(node->var))
+      println("  leaq \"%s\"(%%rip), %%rax", node->var->name);
+    else
+      println("  movq \"%s\"@GOTPCREL(%%rip), %%rax", node->var->name);
     return;
   case ND_DEREF:
     gen_expr(node->lhs);
@@ -1445,7 +1424,7 @@ static int assign_lvar_offsets(Scope *sc, int bottom) {
   int max_depth = bottom;
   for (Scope *sub = sc->children; sub; sub = sub->sibling_next) {
     int sub_depth= assign_lvar_offsets(sub, bottom);
-    if (dont_reuse_stack)
+    if (!opt_reuse_stack)
       bottom = max_depth = sub_depth;
     else
       max_depth = MAX(max_depth, sub_depth);
@@ -1469,63 +1448,75 @@ static void emit_data(Obj *prog) {
     else
       println("  .globl \"%s\"", var->name);
 
-    int align = (var->ty->kind == TY_ARRAY && var->ty->size >= 16)
-      ? MAX(16, var->ty->align) : var->ty->align;
+    int64_t sz = var->ty->size;
+    int align = var->ty->align;
 
-    if (var->is_tentative) {
-      if (var->ty->kind == TY_ARRAY && var->ty->size < 0)
-        var->ty->size = var->ty->base->size;
-
-      // Common symbol
-      if (opt_fcommon) {
-        println("  .comm \"%s\", %d, %d", var->name, var->ty->size, align);
-        continue;
-      }
+    if (var->ty->kind == TY_ARRAY) {
+      if (sz < 0 && var->is_tentative)
+        sz = var->ty->base->size;
+      if (sz >= 16)
+        align = MAX(16, align);
     }
 
-    // .data or .tdata
-    if (var->init_data) {
-      if (var->is_tls && opt_data_sections)
-        println("  .section .tdata.\"%s\",\"awT\",@progbits", var->name);
-      else if (var->is_tls)
-        println("  .section .tdata,\"awT\",@progbits");
-      else if (opt_data_sections)
-        println("  .section .data.\"%s\",\"aw\",@progbits", var->name);
-      else
-        println("  .data");
+    if (sz < 0)
+      error("object \'%s\' has incomplete type", var->name);
 
-      println("  .type \"%s\", @object", var->name);
-      println("  .size \"%s\", %d", var->name, var->ty->size);
-      println("  .align %d", align);
-      println("\"%s\":", var->name);
-
-      Relocation *rel = var->rel;
-      int pos = 0;
-      while (pos < var->ty->size) {
-        if (rel && rel->offset == pos) {
-          println("  .quad \"%s\"%+ld", *rel->label, rel->addend);
-          rel = rel->next;
-          pos += 8;
-        } else {
-          println("  .byte %d", var->init_data[pos++]);
-        }
-      }
+    if (opt_fcommon && var->is_tentative && !var->is_tls) {
+      println("  .comm \"%s\", %d, %d", var->name, var->ty->size, align);
       continue;
     }
 
-    // .bss or .tbss
-    if (var->is_tls && opt_data_sections)
-      println("  .section .tbss.\"%s\",\"awT\",@nobits", var->name);
-    else if (var->is_tls)
-      println("  .section .tbss,\"awT\",@nobits");
-    else if (opt_data_sections)
-      println("  .section .bss.\"%s\",\"aw\",@nobits", var->name);
+    if (var->is_tls)
+      print(".section .%s", var->init_data ? "tdata" : "tbss");
+    else if ((opt_fpic || opt_fpie) && var->rel)
+      print(".section .data.rel%s", (opt_fpie ? ".local" : ""));
     else
-      println("  .bss");
+      print(".section .%s", var->init_data ? "data" : "bss");
 
+    if (opt_data_sections)
+      print(".\"%s\"", var->name);
+
+    if (var->is_tls)
+      print(",\"awT\"");
+    else
+      print(",\"aw\"");
+
+    if (!var->init_data)
+      println(",@nobits");
+    else
+      println(",@progbits");
+
+    println("  .type \"%s\", @object", var->name);
+    println("  .size \"%s\", %"PRIi64, var->name, sz);
     println("  .align %d", align);
-    println("\"%s\":", var->name);
-    println("  .zero %d", var->ty->size);
+    println("  \"%s\":", var->name);
+
+    if (!var->init_data) {
+      println("  .zero %"PRIi64, sz);
+      continue;
+    }
+
+    Relocation *rel = var->rel;
+    for (int pos = 0;;) {
+      int rem = (rel ? rel->offset : sz) - pos;
+
+      while (rem > 0) {
+        if (rem >= 8)
+          println("  .quad %"PRIi64, *(int64_t *)&var->init_data[pos]), pos += 8, rem -= 8;
+        else if (rem >= 4)
+          println("  .long %"PRIi32, *(int32_t *)&var->init_data[pos]), pos += 4, rem -= 4;
+        else if (rem >= 2)
+          println("  .word %"PRIi16, *(int16_t *)&var->init_data[pos]), pos += 2, rem -= 2;
+        else
+          println("  .byte %"PRIi8, *(int8_t *)&var->init_data[pos]), pos += 1, rem -= 1;
+      }
+
+      if (!rel)
+        break;
+
+      println("  .quad \"%s\"%+ld", *rel->label, rel->addend), pos += 8;
+      rel = rel->next;
+    }
   }
 }
 

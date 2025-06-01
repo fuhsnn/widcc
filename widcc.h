@@ -111,6 +111,7 @@ struct File {
   File *display_file;
   int line_delta;
   bool is_input;
+  bool is_syshdr;
 };
 
 // Token type
@@ -165,7 +166,7 @@ char *search_include_paths(char *filename);
 void init_macros(void);
 void define_macro(char *name, char *buf);
 void undef_macro(char *name);
-Token *preprocess(Token *tok);
+Token *preprocess(Token *tok,  char *input_file);
 
 //
 // parse.c
@@ -460,6 +461,7 @@ bool is_numeric(Type *ty);
 bool is_bitfield(Node *node);
 bool is_compatible(Type *t1, Type *t2);
 bool is_const_expr(Node *node, int64_t *val);
+void init_ty_lp64(void);
 Type *copy_type(Type *ty);
 Type *pointer_to(Type *base);
 Type *func_type(Type *return_ty);
@@ -475,8 +477,6 @@ Type *new_type(TypeKind kind, int size, int align);
 void codegen(Obj *prog, FILE *out);
 int align_to(int n, int align);
 
-extern bool dont_reuse_stack;
-
 //
 // unicode.c
 //
@@ -488,8 +488,18 @@ bool is_ident2(uint32_t c);
 int display_width(char *p, int len);
 
 //
+// platform.c
+//
+
+void platform_init(void);
+void platform_stdinc_paths(StringArray *paths);
+void run_assembler(StringArray *as_args, char *input, char *output);
+void run_linker(StringArray *paths, StringArray *inputs, char *output);
+
+//
 // main.c
 //
+
 typedef enum {
   STD_NONE = 0,
   STD_C89,
@@ -500,14 +510,42 @@ typedef enum {
 } StdVer;
 
 bool file_exists(char *path);
+bool in_sysincl_path(char *path);
 
+char *find_dir_w_file(char *pattern);
+void run_subprocess(char **argv);
+void set_fpic(char *lvl);
+void set_fpie(char *lvl);
+void add_include_path(StringArray *arr, char *s);
+void run_assembler_gnustyle(StringArray *as_args, char *input, char *output);
+void run_linker_gnustyle(StringArray *paths, StringArray *inputs, char *output,
+  char *ldso_path, char *libpath, char *gcclibpath);
+
+extern char *argv0;
 extern StringArray include_paths;
 extern bool opt_E;
 extern bool opt_fpic;
+extern bool opt_fpie;
 extern bool opt_fcommon;
+extern bool opt_reuse_stack;
 extern bool opt_g;
 extern bool opt_func_sections;
 extern bool opt_data_sections;
+extern bool opt_werror;
 extern bool opt_cc1_asm_pp;
-extern char *base_file;
 extern StdVer opt_std;
+
+extern bool opt_pie;
+extern bool opt_nopie;
+extern bool opt_pthread;
+extern bool opt_r;
+extern bool opt_rdynamic;
+extern bool opt_static;
+extern bool opt_static_pie;
+extern bool opt_static_libgcc;
+extern bool opt_shared;
+extern bool opt_nostartfiles;
+extern bool opt_nodefaultlibs;
+extern bool opt_nolibc;
+extern char *opt_use_ld;
+extern char *opt_use_as;

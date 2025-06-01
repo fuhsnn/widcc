@@ -3334,7 +3334,7 @@ static Node *primary(Token **rest, Token *tok) {
 
       if (strstr(name, "setjmp") || strstr(name, "savectx") ||
           strstr(name, "vfork") || strstr(name, "getcontext"))
-        dont_reuse_stack = true;
+        opt_reuse_stack = false;
     }
 
     if (sc) {
@@ -3507,7 +3507,7 @@ static void func_definition(Token **rest, Token *tok, Type *ty, VarAttr *attr, T
     calc->next = fn->body->body;
     fn->body->body = calc;
   }
-  if (fn_use_vla && !dont_dealloc_vla && !dont_reuse_stack)
+  if (fn_use_vla && !dont_dealloc_vla && opt_reuse_stack)
     fn->dealloc_vla = true;
 
   leave_scope();

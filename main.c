@@ -1,15 +1,41 @@
 #include "widcc.h"
 
+#if defined(__SANITIZE_ADDRESS__)
+#define USE_ASAN 1
+#elif defined(__has_feature)
+#if __has_feature(address_sanitizer)
+#define USE_ASAN 1
+#endif
+#endif
+
+#if USE_ASAN
+const char *__asan_default_options(void) {
+  return "detect_leaks=0";
+}
+#endif
+
 typedef enum {
   FILE_NONE, FILE_C, FILE_ASM, FILE_OBJ, FILE_AR, FILE_DSO, FILE_PP_ASM
 } FileType;
 
+typedef enum {
+  LT_RELO,
+  LT_SHARED,
+  LT_DYNAMIC,
+  LT_STATIC_PIE,
+  LT_STATIC,
+  LT_PIE,
+} LinkType;
+
 StringArray include_paths;
-bool opt_fcommon = true;
+bool opt_fcommon;
 bool opt_fpic;
+bool opt_fpie;
+bool opt_reuse_stack = true;
 bool opt_g;
 bool opt_func_sections;
 bool opt_data_sections;
+bool opt_werror;
 bool opt_cc1_asm_pp;
 StdVer opt_std;
 
@@ -18,76 +44,99 @@ bool opt_E;
 static bool opt_P;
 static bool opt_M;
 static bool opt_MD;
-static bool opt_MMD;
+static bool opt_MM;
 static bool opt_MP;
 static bool opt_S;
 static bool opt_c;
-static bool opt_cc1;
 static bool opt_hash_hash_hash;
-static bool opt_static;
-static bool opt_shared;
+bool opt_pie;
+bool opt_nopie;
+bool opt_pthread;
+bool opt_r;
+bool opt_rdynamic;
+bool opt_static;
+bool opt_static_pie;
+bool opt_static_libgcc;
+bool opt_shared;
+bool opt_nostartfiles;
+bool opt_nodefaultlibs;
+bool opt_nolibc;
+char *opt_use_ld = "ld";
+char *opt_use_as = "as";
 static char *opt_MF;
 static char *opt_MT;
 static char *opt_o;
 
+static StringArray ld_paths;
 static StringArray ld_extra_args;
-static StringArray std_include_paths;
-
-char *base_file;
-static char *output_file;
-
+static StringArray sysincl_paths;
 static StringArray input_paths;
 static StringArray tmpfiles;
+static StringArray as_args;
+
+char *argv0;
+
+static void cc1(char *input_file, char *output, bool is_asm_pp);
 
 static void usage(int status) {
   fprintf(stderr, "widcc [ -o <path> ] <file>\n");
   exit(status);
 }
 
-static bool take_arg(char *arg) {
-  char *x[] = {
-    "-o", "-I", "-idirafter", "-include", "-x", "-MF", "-MT", "-Xlinker",
-  };
-
-  for (int i = 0; i < sizeof(x) / sizeof(*x); i++)
-    if (!strcmp(arg, x[i]))
-      return true;
+static bool startswith(char *arg, char **p, char *str) {
+  size_t len = strlen(str);
+  if (!strncmp(arg, str, len)) {
+    *p = arg + len;
+    return true;
+  }
   return false;
 }
 
-static void add_include_path(char *p) {
-  char *str = strdup(p);
+static bool take_arg(char **argv, int *i, char **arg, char *opt) {
+  if (strcmp(argv[*i], opt))
+    return false;
+  *i += 1;
+  if (argv[*i]) {
+    *arg = argv[*i];
+    return true;
+  }
+  fprintf(stderr, "missing argument to %s\n", opt);
+  exit(1);
+}
 
-  for (int i = strlen(str) - 1; i >= 0 && str[i] == '/';)
-    str[i--] = '\0';
+static bool take_arg_s(char **argv, int *i, char **p, char *str) {
+  return take_arg(argv, i, p, str) || startswith(argv[*i], p, str);
+}
 
-  for (int i = 0; i < include_paths.len; i++) {
-    if (!strcmp(include_paths.data[i], str))
+static bool comma_arg(char *arg, StringArray *arr, char *str) {
+  if (startswith(arg, &arg, str)) {
+    arg = strtok(strdup(arg), ",");
+    while (arg) {
+      strarray_push(arr, arg);
+      arg = strtok(NULL, ",");
+    }
+    return true;
+  }
+  return false;
+}
+
+void add_include_path(StringArray *arr, char *path) {
+  size_t orig_len = strlen(path);
+  size_t len = orig_len;
+
+  while (len > 1 && path[len - 1] == '/')
+    len--;
+
+  for (int i = 0; i < arr->len; i++) {
+    char *s2 = arr->data[i];
+    if (!strncmp(s2, path, len) && s2[len] == '\0')
       return;
   }
-  strarray_push(&include_paths, str);
-}
 
-static void add_default_include_paths(char *argv0) {
-  // We expect that compiler-provided include files are installed
-  // to ./include relative to argv[0].
-  strarray_push(&std_include_paths, format("%s/include", dirname(strdup(argv0))));
+  if (len != orig_len)
+    path = strndup(path, len);
 
-  // Add standard include paths.
-  strarray_push(&std_include_paths, "/usr/local/include");
-  strarray_push(&std_include_paths, "/usr/include/x86_64-linux-gnu");
-  strarray_push(&std_include_paths, "/usr/include");
-
-  for (int i = 0; i < std_include_paths.len; i++)
-    strarray_push(&include_paths, std_include_paths.data[i]);
-}
-
-static void define(char *str) {
-  char *eq = strchr(str, '=');
-  if (eq)
-    define_macro(strndup(str, eq - str), eq + 1);
-  else
-    define_macro(str, "1");
+  strarray_push(arr, path);
 }
 
 static FileType parse_opt_x(char *s) {
@@ -100,6 +149,18 @@ static FileType parse_opt_x(char *s) {
   if (!strcmp(s, "none"))
     return FILE_NONE;
   error("<command line>: unknown argument for -x: %s", s);
+}
+
+static bool set_bool(char *p, bool val, char *str, bool *opt) {
+  if (!strcmp(p, str)) {
+    *opt = val;
+    return true;
+  }
+  return false;
+}
+
+static bool set_true(char *p, char *str, bool *opt) {
+  return set_bool(p, true, str, opt);
 }
 
 static void set_std(int val) {
@@ -115,6 +176,24 @@ static void set_std(int val) {
     opt_std = STD_C23;
   else
     error("unknown c standard");
+}
+
+void set_fpic(char *lvl) {
+  opt_fpic = true;
+  opt_fpie = false;
+  define_macro("__pic__", lvl);
+  define_macro("__PIC__", lvl);
+  undef_macro("__pie__");
+  undef_macro("__PIE__");
+}
+
+void set_fpie(char *lvl) {
+  opt_fpic = false;
+  opt_fpie = true;
+  define_macro("__pic__", lvl);
+  define_macro("__PIC__", lvl);
+  define_macro("__pie__", lvl);
+  define_macro("__PIE__", lvl);
 }
 
 static char *quote_makefile(char *s) {
@@ -145,52 +224,39 @@ static char *quote_makefile(char *s) {
   return buf;
 }
 
-static void parse_args(int argc, char **argv) {
-  // Make sure that all command line options that take an argument
-  // have an argument.
-  for (int i = 1; i < argc; i++)
-    if (take_arg(argv[i]))
-      if (!argv[++i])
-        usage(1);
+static void define(char *str) {
+  char *eq = strchr(str, '=');
+  if (eq)
+    define_macro(strndup(str, eq - str), eq + 1);
+  else
+    define_macro(str, "1");
+}
 
+static int parse_args(int argc, char **argv) {
+  char *arg;
   StringArray idirafter = {0};
+  int input_cnt = 0;
+  bool opt_nostdinc = false;
 
   for (int i = 1; i < argc; i++) {
+    if (*argv[i] == '\0')
+      continue;
+
     if (!strcmp(argv[i], "-###")) {
       opt_hash_hash_hash = true;
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-cc1")) {
-      opt_cc1 = true;
       continue;
     }
 
     if (!strcmp(argv[i], "--help"))
       usage(0);
 
-    if (!strcmp(argv[i], "-o")) {
-      opt_o = argv[++i];
-      continue;
-    }
-
-    if (!strncmp(argv[i], "-o", 2)) {
-      opt_o = argv[i] + 2;
+    if (take_arg_s(argv, &i, &arg, "-o")) {
+      opt_o = arg;
       continue;
     }
 
     if (!strcmp(argv[i], "-S")) {
       opt_S = true;
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-fcommon")) {
-      opt_fcommon = true;
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-fno-common")) {
-      opt_fcommon = false;
       continue;
     }
 
@@ -209,65 +275,60 @@ static void parse_args(int argc, char **argv) {
       continue;
     }
 
-    if (!strcmp(argv[i], "-I")) {
-      add_include_path(argv[++i]);
+    if (take_arg_s(argv, &i, &arg, "-I")) {
+      add_include_path(&include_paths, arg);
       continue;
     }
 
-    if (!strncmp(argv[i], "-I", 2)) {
-      add_include_path(argv[i] + 2);
+    if (take_arg_s(argv, &i, &arg, "-isystem")) {
+      add_include_path(&sysincl_paths, arg);
       continue;
     }
 
-    if (!strcmp(argv[i], "-D")) {
-      define(argv[++i]);
+    if (take_arg_s(argv, &i, &arg, "-idirafter")) {
+      add_include_path(&idirafter, arg);
       continue;
     }
 
-    if (!strncmp(argv[i], "-D", 2)) {
-      define(argv[i] + 2);
+    if (take_arg_s(argv, &i, &arg, "-D")) {
+      define(arg);
       continue;
     }
 
-    if (!strcmp(argv[i], "-U")) {
-      undef_macro(argv[++i]);
+    if (take_arg_s(argv, &i, &arg, "-U")) {
+      undef_macro(arg);
       continue;
     }
 
-    if (!strncmp(argv[i], "-U", 2)) {
-      undef_macro(argv[i] + 2);
+    if (take_arg_s(argv, &i, &arg, "-include")) {
+      strarray_push(&opt_include, arg);
       continue;
     }
 
-    if (!strcmp(argv[i], "-include")) {
-      strarray_push(&opt_include, argv[++i]);
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-x")) {
+    if (take_arg_s(argv, &i, &arg, "-x")) {
       strarray_push(&input_paths, "-x");
-      strarray_push(&input_paths, argv[++i]);
+      strarray_push(&input_paths, arg);
       continue;
     }
 
-    if (!strncmp(argv[i], "-x", 2)) {
-      strarray_push(&input_paths, "-x");
-      strarray_push(&input_paths, argv[i] + 2);
+    if (take_arg_s(argv, &i, &arg, "-L")) {
+      strarray_push(&ld_paths, "-L");
+      strarray_push(&ld_paths, arg);
       continue;
     }
 
-    if (!strncmp(argv[i], "-l", 2) || !strncmp(argv[i], "-Wl,", 4)) {
-      strarray_push(&input_paths, argv[i]);
+    if (comma_arg(argv[i], &as_args, "-Wa,") ||
+      comma_arg(argv[i], &ld_extra_args, "-Wl,"))
+      continue;
+
+    if (take_arg_s(argv, &i, &arg, "-l")) {
+      strarray_push(&ld_extra_args, "-l");
+      strarray_push(&ld_extra_args, arg);
       continue;
     }
 
-    if (!strcmp(argv[i], "-rdynamic")) {
-      strarray_push(&input_paths, "-Wl,--export-dynamic");
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-Xlinker")) {
-      strarray_push(&ld_extra_args, argv[++i]);
+    if (take_arg(argv, &i, &arg, "-Xlinker")) {
+      strarray_push(&ld_extra_args, arg);
       continue;
     }
 
@@ -281,21 +342,8 @@ static void parse_args(int argc, char **argv) {
       continue;
     }
 
-    if (!strcmp(argv[i], "-MF")) {
-      opt_MF = argv[++i];
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-MP")) {
-      opt_MP = true;
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-MT")) {
-      if (opt_MT == NULL)
-        opt_MT = argv[++i];
-      else
-        opt_MT = format("%s %s", opt_MT, argv[++i]);
+    if (!strcmp(argv[i], "-MM")) {
+      opt_M = opt_MM = true;
       continue;
     }
 
@@ -304,72 +352,34 @@ static void parse_args(int argc, char **argv) {
       continue;
     }
 
-    if (!strcmp(argv[i], "-MQ")) {
-      if (opt_MT == NULL)
-        opt_MT = quote_makefile(argv[++i]);
-      else
-        opt_MT = format("%s %s", opt_MT, quote_makefile(argv[++i]));
-      continue;
-    }
-
     if (!strcmp(argv[i], "-MMD")) {
-      opt_MD = opt_MMD = true;
+      opt_MD = opt_MM = true;
       continue;
     }
 
-    if (!strcmp(argv[i], "-fpic") || !strcmp(argv[i], "-fPIC")) {
-      opt_fpic = true;
+    if (take_arg(argv, &i, &arg, "-MF")) {
+      opt_MF = arg;
       continue;
     }
 
-    if (!strcmp(argv[i], "-cc1-input")) {
-      base_file = argv[++i];
+    if (!strcmp(argv[i], "-MP")) {
+      opt_MP = true;
       continue;
     }
 
-    if (!strcmp(argv[i], "-cc1-output")) {
-      output_file = argv[++i];
+    if (take_arg(argv, &i, &arg, "-MT")) {
+      if (opt_MT == NULL)
+        opt_MT = arg;
+      else
+        opt_MT = format("%s %s", opt_MT, arg);
       continue;
     }
 
-    if (!strcmp(argv[i], "-cc1-asm-pp")) {
-      opt_E = true;
-      opt_cc1_asm_pp = true;
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-idirafter")) {
-      strarray_push(&idirafter, argv[i++]);
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-pthread")) {
-      define("_REENTRANT");
-      strarray_push(&input_paths, "-lpthread");
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-static")) {
-      opt_static = true;
-      strarray_push(&ld_extra_args, "-static");
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-shared")) {
-      opt_shared = true;
-      strarray_push(&ld_extra_args, "-shared");
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-L")) {
-      strarray_push(&ld_extra_args, "-L");
-      strarray_push(&ld_extra_args, argv[++i]);
-      continue;
-    }
-
-    if (!strncmp(argv[i], "-L", 2)) {
-      strarray_push(&ld_extra_args, "-L");
-      strarray_push(&ld_extra_args, argv[i] + 2);
+    if (take_arg(argv, &i, &arg, "-MQ")) {
+      if (opt_MT == NULL)
+        opt_MT = quote_makefile(arg);
+      else
+        opt_MT = format("%s %s", opt_MT, quote_makefile(arg));
       continue;
     }
 
@@ -378,11 +388,8 @@ static void parse_args(int argc, char **argv) {
       exit(0);
     }
 
-    if (!strncmp(argv[i], "-g", 2)) {
-      if (argv[i][2] == '0')
-        opt_g = false;
-      else
-        opt_g = true;
+    if (startswith(argv[i], &arg, "-g")) {
+      opt_g = strcmp(arg, "0");
       continue;
     }
 
@@ -390,50 +397,120 @@ static void parse_args(int argc, char **argv) {
       set_std(89);
       define("__STRICT_ANSI__");
       continue;
-    } else if (!strncmp(argv[i], "-std=c", 6)) {
-      set_std(strtoul(argv[i] + 6, NULL, 10));
-      continue;
-    } else if (!strncmp(argv[i], "--std=c", 7)) {
-      set_std(strtoul(argv[i] + 7, NULL, 10));
+    } else if (startswith(argv[i], &arg, "-std=c") ||
+      startswith(argv[i], &arg, "--std=c")) {
+      set_std(strtoul(arg, NULL, 10));
       continue;
     } else if (!strcmp(argv[i], "--std")) {
-      if (*argv[++i] != 'c')
-        error("unknown c standard");
-      set_std(strtoul(argv[i] + 1, NULL, 10));
+      if (startswith(argv[++i], &arg, "c")) {
+        set_std(strtoul(arg, NULL, 10));
+        continue;
+      }
+      error("unknown c standard");
+    }
+
+    if (startswith(argv[i], &arg, "-f")) {
+      bool b = !startswith(arg, &arg, "no-");
+
+      if (set_bool(arg, b, "common", &opt_fcommon) ||
+        set_bool(arg, b, "function-sections", &opt_func_sections) ||
+        set_bool(arg, b, "data-sections", &opt_data_sections))
+        continue;
+
+      if (b) {
+        if (!strcmp(arg, "pic")) { set_fpic("1"); continue; }
+        if (!strcmp(arg, "PIC")) { set_fpic("2"); continue; }
+        if (!strcmp(arg, "pie")) { set_fpie("1"); continue; }
+        if (!strcmp(arg, "PIE")) { set_fpie("2"); continue; }
+      } else {
+        if (!strcmp(arg, "pic") || !strcmp(arg, "PIC") ||
+          !strcmp(arg, "pie") || !strcmp(arg, "PIE")) {
+          opt_fpic = opt_fpie = false;
+          undef_macro("__pic__");
+          undef_macro("__PIC__");
+          undef_macro("__pie__");
+          undef_macro("__PIE__");
+          continue;
+        }
+      }
+
+      // -f only options
+      if (b) {
+        if (set_bool(arg, false, "signed-char", &ty_pchar->is_unsigned) ||
+          set_bool(arg, true, "unsigned-char", &ty_pchar->is_unsigned))
+          continue;
+
+        if (startswith(arg, &arg, "stack-reuse=")) {
+          opt_reuse_stack = !strcmp(arg, "all");
+          continue;
+        }
+        if (startswith(arg, &opt_use_as, "use-as="))
+          continue;
+
+        if (startswith(arg, &arg, "use-ld=")) {
+          if (!strcmp(arg, "lld")) {
+            opt_use_ld = "ld.lld";
+            continue;
+          }
+          opt_use_ld = arg;
+          continue;
+        }
+      }
+    }
+
+    if (argv[i][0] == '-') {
+      arg = (argv[i][1] == '-') ? &argv[i][2] : &argv[i][1];
+
+      if (set_true(arg, "r", &opt_r) ||
+        set_true(arg, "rdynamic", &opt_rdynamic) ||
+        set_true(arg, "static", &opt_static) ||
+        set_true(arg, "static-pie", &opt_static_pie) ||
+        set_true(arg, "static-libgcc", &opt_static_libgcc) ||
+        set_true(arg, "shared", &opt_shared) ||
+        set_true(arg, "pie", &opt_pie) ||
+        set_true(arg, "nopie", &opt_nopie))
+        continue;
+
+      if (!strcmp(arg, "no-pie")) {
+        opt_pie = false;
+        opt_nopie = true;
+        continue;
+      }
+      if (!strcmp(arg, "pthread")) {
+        opt_pthread = true;
+        define("_REENTRANT");
+        continue;
+      }
+    }
+
+    if (!strcmp(argv[i], "-nostdinc")) {
+      opt_nostdinc = true;
       continue;
     }
 
-    if (!strncmp(argv[i], "-fstack-reuse=", 14)) {
-      if (strncmp(argv[i] + 14, "all\0", 4))
-        dont_reuse_stack = true;
+    if (set_true(argv[i], "-nostartfiles", &opt_nostartfiles) ||
+      set_true(argv[i], "-nodefaultlibs", &opt_nodefaultlibs) ||
+      set_true(argv[i], "-nolibc", &opt_nolibc))
+      continue;
+
+    if (!strcmp(argv[i], "-nostdlib")) {
+      opt_nostartfiles = opt_nodefaultlibs = true;
       continue;
     }
 
-    if (!strcmp(argv[i], "-fsigned-char"))
+    if (set_bool(argv[i], true, "-Werror", &opt_werror) ||
+      set_bool(argv[i], false, "-Wno-error", &opt_werror))
       continue;
-    if (!strcmp(argv[i], "-funsigned-char")) {
-      ty_pchar->is_unsigned = true;
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-ffunction-sections")) {
-      opt_func_sections = true;
-      continue;
-    }
-
-    if (!strcmp(argv[i], "-fdata-sections")) {
-      opt_data_sections = true;
-      continue;
-    }
 
     // These options are ignored for now.
-    if (!strncmp(argv[i], "-O", 2) ||
-        !strncmp(argv[i], "-W", 2) ||
-        !strncmp(argv[i], "-std=", 5) ||
-        !strncmp(argv[i], "-march=", 7) ||
+    if (startswith(argv[i], &arg, "-O") ||
+        startswith(argv[i], &arg, "-W") ||
+        startswith(argv[i], &arg, "-std=") ||
+        startswith(argv[i], &arg, "-march=") ||
         !strcmp(argv[i], "-ffreestanding") ||
         !strcmp(argv[i], "-fno-builtin") ||
         !strcmp(argv[i], "-fno-lto") ||
+        !strcmp(argv[i], "-fno-plt") ||
         !strcmp(argv[i], "-fno-asynchronous-unwind-tables") ||
         !strcmp(argv[i], "-fno-delete-null-pointer-checks") ||
         !strcmp(argv[i], "-fno-omit-frame-pointer") ||
@@ -452,13 +529,31 @@ static void parse_args(int argc, char **argv) {
       error("unknown argument: %s", argv[i]);
 
     strarray_push(&input_paths, argv[i]);
+    input_cnt++;
   }
 
-  for (int i = 0; i < idirafter.len; i++)
-    add_include_path(idirafter.data[i]);
+  if (!opt_nostdinc)
+    platform_stdinc_paths(&sysincl_paths);
 
-  if (input_paths.len == 0)
-    error("no input files");
+  for (int i = 0; i < idirafter.len; i++)
+    add_include_path(&sysincl_paths, idirafter.data[i]);
+
+  // Filter system directories passed as -I
+  int incl_cnt = 0;
+  for (int i = 0; i < include_paths.len; i++) {
+    bool match = false;
+    for (int j = 0; j < sysincl_paths.len; j++)
+      if ((match = !strcmp(sysincl_paths.data[j], include_paths.data[i])))
+        break;
+    if (!match)
+      include_paths.data[incl_cnt++] = include_paths.data[i];
+  }
+  include_paths.len = incl_cnt;
+
+  for (int i = 0; i < sysincl_paths.len; i++)
+    strarray_push(&include_paths, sysincl_paths.data[i]);
+
+  return input_cnt;
 }
 
 static FILE *open_file(char *path) {
@@ -502,13 +597,14 @@ static char *create_tmpfile(void) {
   return path;
 }
 
-static void run_subprocess(char **argv) {
+void run_subprocess(char **argv) {
   // If -### is given, dump the subprocess's command line.
   if (opt_hash_hash_hash) {
-    fprintf(stderr, "%s", argv[0]);
+    fprintf(stderr, "\"%s\"", argv[0]);
     for (int i = 1; argv[i]; i++)
-      fprintf(stderr, " %s", argv[i]);
+      fprintf(stderr, " \"%s\"", argv[i]);
     fprintf(stderr, "\n");
+    return;
   }
 
   if (fork() == 0) {
@@ -520,30 +616,28 @@ static void run_subprocess(char **argv) {
 
   // Wait for the child process to finish.
   int status;
-  while (wait(&status) > 0);
-  if (status != 0)
+  if (wait(&status) <= 0 || status != 0)
     exit(1);
 }
 
-static void run_cc1(int argc, char **argv, char *input, char *output, char *option) {
-  char **args = calloc(argc + 10, sizeof(char *));
-  memcpy(args, argv, argc * sizeof(char *));
-  args[argc++] = "-cc1";
+static void run_cc1(char *input, char *output, bool no_fork, bool is_asm_pp) {
+  if (opt_hash_hash_hash)
+    return;
 
-  if (input) {
-    args[argc++] = "-cc1-input";
-    args[argc++] = input;
+  if (no_fork) {
+    cc1(input, output, is_asm_pp);
+    return;
   }
 
-  if (output) {
-    args[argc++] = "-cc1-output";
-    args[argc++] = output;
+  if (fork() == 0) {
+    cc1(input, output, is_asm_pp);
+    _exit(0);
   }
 
-  if (option)
-    args[argc++] = option;
-
-  run_subprocess(args);
+  // Wait for the child process to finish.
+  int status;
+  if (wait(&status) <= 0 || status != 0)
+    exit(1);
 }
 
 static void print_linemarker(FILE *out, Token *tok) {
@@ -594,9 +688,9 @@ static void print_tokens(Token *tok, char *path) {
     fclose(out);
 }
 
-static bool in_std_include_path(char *path) {
-  for (int i = 0; i < std_include_paths.len; i++) {
-    char *dir = std_include_paths.data[i];
+bool in_sysincl_path(char *path) {
+  for (int i = 0; i < sysincl_paths.len; i++) {
+    char *dir = sysincl_paths.data[i];
     int len = strlen(dir);
     if (strncmp(dir, path, len) == 0 && path[len] == '/')
       return true;
@@ -607,12 +701,12 @@ static bool in_std_include_path(char *path) {
 // If -M options is given, the compiler write a list of input files to
 // stdout in a format that "make" command can read. This feature is
 // used to automate file dependency management.
-static void print_dependencies(void) {
+static void print_dependencies(char *input) {
   char *path;
   if (opt_MF)
     path = opt_MF;
   else if (opt_MD)
-    path = replace_extn(opt_o ? opt_o : base_file, ".d");
+    path = replace_extn(opt_o ? opt_o : input, ".d");
   else if (opt_o)
     path = opt_o;
   else
@@ -622,13 +716,13 @@ static void print_dependencies(void) {
   if (opt_MT)
     fprintf(out, "%s:", opt_MT);
   else
-    fprintf(out, "%s:", quote_makefile(replace_extn(base_file, ".o")));
+    fprintf(out, "%s:", quote_makefile(replace_extn(input, ".o")));
 
   File **files = get_input_files();
 
   for (int i = 0; files[i]; i++) {
     char *name = files[i]->name;
-    if ((opt_MMD && in_std_include_path(name)) || !files[i]->is_input)
+    if ((opt_MM && files[i]->is_syshdr) || !files[i]->is_input)
       continue;
     fprintf(out, " \\\n  %s", name);
   }
@@ -638,11 +732,15 @@ static void print_dependencies(void) {
   if (opt_MP) {
     for (int i = 1; files[i]; i++) {
       char *name = files[i]->name;
-      if ((opt_MMD && in_std_include_path(name)) || !files[i]->is_input)
+      if ((opt_MM && files[i]->is_syshdr) || !files[i]->is_input)
         continue;
       fprintf(out, "%s:\n\n", quote_makefile(name));
     }
   }
+  if (out == stdout)
+    fflush(out);
+  else
+    fclose(out);
 }
 
 static Token *must_tokenize_file(char *path, Token **end) {
@@ -653,20 +751,24 @@ static Token *must_tokenize_file(char *path, Token **end) {
   return tok;
 }
 
-static void cc1(void) {
+static void cc1(char *input_file, char *output_file, bool is_asm_pp) {
   Token head = {0};
   Token *cur = &head;
 
+  if (is_asm_pp)
+    opt_E = opt_cc1_asm_pp = true;
+
   if (!opt_E) {
-    Token *end;
-    head.next = tokenize(add_input_file("widcc_builtins",
+    Token *last;
+    cur->next = tokenize(add_input_file("widcc_builtins",
     "typedef struct {"
     "  unsigned int gp_offset;"
     "  unsigned int fp_offset;"
     "  void *overflow_arg_area;"
     "  void *reg_save_area;"
-    "} __builtin_va_list[1];", NULL), &end);
-    cur = end;
+    "} __builtin_va_list[1];"
+    , NULL), &last);
+    cur = last;
   }
 
   // Process -include option
@@ -689,12 +791,12 @@ static void cc1(void) {
   }
 
   // Tokenize and parse.
-  cur->next = must_tokenize_file(base_file, NULL);
-  Token *tok = preprocess(head.next);
+  cur->next = must_tokenize_file(input_file, NULL);
+  Token *tok = preprocess(head.next, input_file);
 
   // If -M or -MD are given, print file dependencies.
   if (opt_M || opt_MD) {
-    print_dependencies();
+    print_dependencies(input_file);
     if (opt_M)
       return;
   }
@@ -707,25 +809,31 @@ static void cc1(void) {
 
   Obj *prog = parse(tok);
 
-  // Open a temporary output buffer.
-  char *buf;
-  size_t buflen;
-  FILE *output_buf = open_memstream(&buf, &buflen);
-
-  // Traverse the AST to emit assembly.
-  codegen(prog, output_buf);
-  fclose(output_buf);
-
   // Write the asembly text to a file.
   FILE *out = open_file(output_file);
-  fwrite(buf, buflen, 1, out);
-  fclose(out);
+  codegen(prog, out);
+
+  if (out == stdout)
+    fflush(out);
+  else
+    fclose(out);
 }
 
-static void assemble(char *input, char *output) {
-  char *cmd[] = {"as", input, "-o", output, NULL};
-  // char *cmd[] = {"clang", "-c", "-xassembler", input, "-o", output, NULL};
-  run_subprocess(cmd);
+void run_assembler_gnustyle( StringArray *args, char *input, char *output) {
+  StringArray arr = {0};
+
+  strarray_push(&arr, opt_use_as);
+  strarray_push(&arr, input);
+  strarray_push(&arr, "-o");
+  strarray_push(&arr, output);
+  strarray_push(&arr, "--fatal-warnings");
+
+  for (int i = 0; i < args->len; i++)
+    strarray_push(&arr, args->data[i]);
+
+  strarray_push(&arr, NULL);
+
+  run_subprocess(arr.data);
 }
 
 static char *find_file(char *pattern) {
@@ -738,89 +846,176 @@ static char *find_file(char *pattern) {
   return path;
 }
 
+char *find_dir_w_file(char *pattern) {
+  static char *path;
+  if (!path) {
+    path = find_file(pattern);
+    if (!path)
+      return NULL;
+    path = dirname(path);
+  }
+  return path;
+}
+
 // Returns true if a given file exists.
 bool file_exists(char *path) {
   struct stat st;
   return !stat(path, &st);
 }
 
-static char *find_libpath(void) {
-  if (file_exists("/usr/lib/x86_64-linux-gnu/crti.o"))
-    return "/usr/lib/x86_64-linux-gnu";
-  if (file_exists("/usr/lib64/crti.o"))
-    return "/usr/lib64";
-  error("library path is not found");
+static LinkType get_link_type(void) {
+  if (opt_r)
+    return LT_RELO;
+  if (opt_shared)
+    return LT_SHARED;
+  if (opt_static_pie)
+    return LT_STATIC_PIE;
+  if (opt_static)
+    return LT_STATIC;
+  if (opt_pie)
+    return LT_PIE;
+  return LT_DYNAMIC;
 }
 
-static char *find_gcc_libpath(void) {
-  char *path = find_file("/usr/lib*/gcc/x86_64*-linux*/*/crtbegin.o");
-  if (path)
-    return dirname(path);
-  error("gcc library path is not found");
+static LinkType link_type(StringArray *arr, char *ldso_path) {
+  LinkType type = get_link_type();
+
+  switch (type) {
+  case LT_RELO:
+    strarray_push(arr, "-r");
+    break;
+  case LT_SHARED:
+    strarray_push(arr, "-shared");
+    break;
+  case LT_STATIC_PIE:
+    strarray_push(arr, "-static");
+    strarray_push(arr, "-pie");
+    break;
+  case LT_STATIC:
+    strarray_push(arr, "-static");
+    break;
+  case LT_PIE:
+    strarray_push(arr, "-pie");
+    break;
+  }
+
+  switch (type) {
+  case LT_STATIC_PIE:
+    strarray_push(arr, "-no-dynamic-linker");
+    break;
+  case LT_DYNAMIC:
+  case LT_SHARED:
+  case LT_PIE:
+    if (opt_rdynamic)
+      strarray_push(arr, "--export-dynamic");
+
+    strarray_push(arr, "-dynamic-linker");
+    strarray_push(arr, ldso_path);
+  }
+  return type;
 }
 
-static void run_linker(StringArray *inputs, char *output) {
+static void link_libgcc(StringArray *arr, bool link_libgcc, bool is_static) {
+  if (!link_libgcc)
+    return;
+  strarray_push(arr, "-lgcc");
+
+  if (is_static) {
+    strarray_push(arr, "-lgcc_eh");
+  } else {
+    strarray_push(arr, "--push-state");
+    strarray_push(arr, "--as-needed");
+    strarray_push(arr, "-lgcc_s");
+    strarray_push(arr, "--pop-state");
+  }
+}
+
+static void link_libc(StringArray *arr) {
+  if (opt_pthread)
+    strarray_push(arr, "-lpthread");
+  if (!opt_nolibc)
+    strarray_push(arr, "-lc");
+}
+
+void run_linker_gnustyle(StringArray *paths, StringArray *args, char *output,
+  char *ldso_path, char *libpath, char *gcc_libpath) {
   StringArray arr = {0};
 
-  strarray_push(&arr, "ld");
+  strarray_push(&arr, opt_use_ld);
   strarray_push(&arr, "-o");
   strarray_push(&arr, output);
   strarray_push(&arr, "-m");
   strarray_push(&arr, "elf_x86_64");
+  strarray_push(&arr, "--eh-frame-hdr");
 
-  char *libpath = find_libpath();
-  char *gcc_libpath = find_gcc_libpath();
+  LinkType lt = link_type(&arr, ldso_path);
 
-  if (opt_shared) {
+  if (!opt_nostartfiles && lt != LT_RELO) {
+    switch (lt) {
+    case LT_STATIC_PIE:
+      strarray_push(&arr, format("%s/rcrt1.o", libpath));
+      break;
+    case LT_PIE:
+      strarray_push(&arr, format("%s/Scrt1.o", libpath));
+      break;
+    case LT_STATIC:
+    case LT_DYNAMIC:
+      strarray_push(&arr, format("%s/crt1.o", libpath));
+      break;
+    }
     strarray_push(&arr, format("%s/crti.o", libpath));
-    strarray_push(&arr, format("%s/crtbeginS.o", gcc_libpath));
-  } else {
-    strarray_push(&arr, format("%s/crt1.o", libpath));
-    strarray_push(&arr, format("%s/crti.o", libpath));
-    strarray_push(&arr, format("%s/crtbegin.o", gcc_libpath));
+
+    if (gcc_libpath) {
+      switch (lt) {
+      case LT_STATIC_PIE:
+      case LT_SHARED:
+      case LT_PIE:
+        strarray_push(&arr, format("%s/crtbeginS.o", gcc_libpath));
+        break;
+      case LT_STATIC:
+        strarray_push(&arr, format("%s/crtbeginT.o", gcc_libpath));
+        break;
+      case LT_DYNAMIC:
+        strarray_push(&arr, format("%s/crtbegin.o", gcc_libpath));
+        break;
+      }
+    }
   }
 
-  strarray_push(&arr, format("-L%s", gcc_libpath));
-  strarray_push(&arr, "-L/usr/lib/x86_64-linux-gnu");
-  strarray_push(&arr, "-L/usr/lib64");
-  strarray_push(&arr, "-L/lib64");
-  strarray_push(&arr, "-L/usr/lib/x86_64-linux-gnu");
-  strarray_push(&arr, "-L/usr/lib/x86_64-pc-linux-gnu");
-  strarray_push(&arr, "-L/usr/lib/x86_64-redhat-linux");
-  strarray_push(&arr, "-L/usr/lib");
-  strarray_push(&arr, "-L/lib");
+  for (int i = 0; i < paths->len; i++)
+    strarray_push(&arr, paths->data[i]);
 
-  if (!opt_static) {
-    strarray_push(&arr, "-dynamic-linker");
-    strarray_push(&arr, "/lib64/ld-linux-x86-64.so.2");
+  for (int i = 0; i < args->len; i++)
+    strarray_push(&arr, args->data[i]);
+
+  if (!opt_nodefaultlibs && lt != LT_RELO) {
+    if (lt == LT_STATIC_PIE || lt == LT_STATIC) {
+      strarray_push(&arr, "--start-group");
+      link_libgcc(&arr, gcc_libpath, true);
+      link_libc(&arr);
+      strarray_push(&arr, "--end-group");
+    } else {
+      link_libgcc(&arr, gcc_libpath, opt_static_libgcc);
+      link_libc(&arr);
+      link_libgcc(&arr, gcc_libpath, opt_static_libgcc);
+    }
   }
 
-  for (int i = 0; i < ld_extra_args.len; i++)
-    strarray_push(&arr, ld_extra_args.data[i]);
-
-  for (int i = 0; i < inputs->len; i++)
-    strarray_push(&arr, inputs->data[i]);
-
-  if (opt_static) {
-    strarray_push(&arr, "--start-group");
-    strarray_push(&arr, "-lgcc");
-    strarray_push(&arr, "-lgcc_eh");
-    strarray_push(&arr, "-lc");
-    strarray_push(&arr, "--end-group");
-  } else {
-    strarray_push(&arr, "-lc");
-    strarray_push(&arr, "-lgcc");
-    strarray_push(&arr, "--as-needed");
-    strarray_push(&arr, "-lgcc_s");
-    strarray_push(&arr, "--no-as-needed");
+  if (!opt_nostartfiles && lt != LT_RELO) {
+    if (gcc_libpath) {
+      switch (lt) {
+      case LT_STATIC_PIE:
+      case LT_SHARED:
+      case LT_PIE:
+        strarray_push(&arr, format("%s/crtendS.o", gcc_libpath));
+        break;
+      case LT_STATIC:
+      case LT_DYNAMIC:
+        strarray_push(&arr, format("%s/crtend.o", gcc_libpath));
+      }
+    }
+    strarray_push(&arr, format("%s/crtn.o", libpath));
   }
-
-  if (opt_shared)
-    strarray_push(&arr, format("%s/crtendS.o", gcc_libpath));
-  else
-    strarray_push(&arr, format("%s/crtend.o", gcc_libpath));
-
-  strarray_push(&arr, format("%s/crtn.o", libpath));
   strarray_push(&arr, NULL);
 
   run_subprocess(arr.data);
@@ -856,47 +1051,27 @@ static FileType get_file_type(char *filename) {
 }
 
 int main(int argc, char **argv) {
+  argv0 = argv[0];
   atexit(cleanup);
   init_macros();
-  parse_args(argc, argv);
+  platform_init();
 
-  if (opt_cc1) {
-    add_default_include_paths(argv[0]);
-    cc1();
-    return 0;
-  }
+  int input_cnt = parse_args(argc, argv);
+  if (input_cnt < 1)
+    error("no input files");
+  else if (input_cnt > 1 && opt_o && (opt_c || opt_S || opt_E))
+    error("cannot specify '-o' with '-c,' '-S' or '-E' with multiple files");
 
+  bool no_fork = (input_cnt == 1);
   StringArray ld_args = {0};
-  int file_count = 0;
   FileType opt_x = FILE_NONE;
-  bool run_ld = false;
 
   for (int i = 0; i < input_paths.len; i++) {
     if (!strcmp(input_paths.data[i], "-x")) {
       opt_x = parse_opt_x(input_paths.data[++i]);
       continue;
     }
-
     char *input = input_paths.data[i];
-
-    if (!strncmp(input, "-l", 2)) {
-      strarray_push(&ld_args, input);
-      continue;
-    }
-
-    if (!strncmp(input, "-Wl,", 4)) {
-      char *s = strdup(input + 4);
-      char *arg = strtok(s, ",");
-      while (arg) {
-        strarray_push(&ld_args, arg);
-        arg = strtok(NULL, ",");
-      }
-      continue;
-    }
-
-    if (opt_o && (opt_c || opt_S || opt_E))
-      if (++file_count > 1)
-        error("cannot specify '-o' with '-c,' '-S' or '-E' with multiple files");
 
     char *output;
     if (opt_o)
@@ -915,7 +1090,6 @@ int main(int argc, char **argv) {
     // Handle .o or .a
     if (type == FILE_OBJ || type == FILE_AR || type == FILE_DSO) {
       strarray_push(&ld_args, input);
-      run_ld = true;
       continue;
     }
 
@@ -925,35 +1099,33 @@ int main(int argc, char **argv) {
         continue;
 
       if (opt_c) {
-        assemble(input, output);
+        run_assembler(&as_args, input, output);
         continue;
       }
 
       char *tmp = create_tmpfile();
-      assemble(input, tmp);
+      run_assembler(&as_args, input, tmp);
       strarray_push(&ld_args, tmp);
-      run_ld = true;
       continue;
     }
 
     // Handle .S
     if (type == FILE_PP_ASM) {
       if (opt_S || opt_E || opt_M) {
-        run_cc1(argc, argv, input, (opt_o ? opt_o : "-"), "-cc1-asm-pp");
+        run_cc1(input, (opt_o ? opt_o : "-"), no_fork, true);
         continue;
       }
       if (opt_c) {
         char *tmp = create_tmpfile();
-        run_cc1(argc, argv, input, tmp, "-cc1-asm-pp");
-        assemble(tmp, output);
+        run_cc1(input, tmp, no_fork, true);
+        run_assembler(&as_args, tmp, output);
         continue;
       }
       char *tmp1 = create_tmpfile();
       char *tmp2 = create_tmpfile();
-      run_cc1(argc, argv, input, tmp1, "-cc1-asm-pp");
-      assemble(tmp1, tmp2);
+      run_cc1(input, tmp1, no_fork, true);
+      run_assembler(&as_args, tmp1, tmp2);
       strarray_push(&ld_args, tmp2);
-      run_ld = true;
       continue;
     }
 
@@ -961,35 +1133,38 @@ int main(int argc, char **argv) {
 
     // Just preprocess
     if (opt_E || opt_M) {
-      run_cc1(argc, argv, input, (opt_o ? opt_o : "-"), NULL);
+      run_cc1(input, (opt_o ? opt_o : "-"), no_fork, false);
       continue;
     }
 
     // Compile
     if (opt_S) {
-      run_cc1(argc, argv, input, output, NULL);
+      run_cc1(input, output, no_fork, false);
       continue;
     }
 
     // Compile and assemble
     if (opt_c) {
       char *tmp = create_tmpfile();
-      run_cc1(argc, argv, input, tmp, NULL);
-      assemble(tmp, output);
+      run_cc1(input, tmp, no_fork, false);
+      run_assembler(&as_args, tmp, output);
       continue;
     }
 
     // Compile, assemble and link
     char *tmp1 = create_tmpfile();
     char *tmp2 = create_tmpfile();
-    run_cc1(argc, argv, input, tmp1, NULL);
-    assemble(tmp1, tmp2);
+    run_cc1(input, tmp1, no_fork, false);
+    run_assembler(&as_args, tmp1, tmp2);
     strarray_push(&ld_args, tmp2);
-    run_ld = true;
     continue;
   }
 
-  if (run_ld)
-    run_linker(&ld_args, opt_o ? opt_o : "a.out");
+  if (ld_args.len) {
+    for (int i = 0; i < ld_extra_args.len; i++)
+      strarray_push(&ld_args, ld_extra_args.data[i]);
+
+    run_linker(&ld_paths, &ld_args, opt_o ? opt_o : "a.out");
+  }
   return 0;
 }
