@@ -126,7 +126,7 @@ static bool startswith(char *p, char *q) {
 static int read_ident(char *start) {
   char *p = start;
   uint32_t c = decode_utf8(&p, p);
-  if (!is_ident1(c))
+  if (!is_ident1(c) || (c == '$' && opt_cc1_asm_pp))
     return 0;
 
   for (;;) {
@@ -148,17 +148,51 @@ static int from_hex(char c) {
 
 // Read a punctuator token from p and returns its length.
 static int read_punct(char *p) {
-  static char *kw[] = {
-    "<<=", ">>=", "...", "==", "!=", "<=", ">=", "->", "+=",
-    "-=", "*=", "/=", "++", "--", "%=", "&=", "|=", "^=", "&&",
-    "||", "<<", ">>", "##",
-  };
+  bool is_repeat = p[1] == *p;
+  bool is_assign = p[1] == '=';
 
-  for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
-    if (startswith(p, kw[i]))
-      return strlen(kw[i]);
-
-  return ispunct(*p) ? 1 : 0;
+  switch (*p) {
+  case '-':
+    if (p[1] == '>')
+      return 2;
+  case '&':
+  case '+':
+  case '=':
+  case '|':
+    return (is_repeat | is_assign) + 1;
+  case '<':
+  case '>':
+    if (is_repeat)
+      return (p[2] == '=') + 2;
+  case '!':
+  case '%':
+  case '*':
+  case '/':
+  case '^':
+    return is_assign + 1;
+  case '#':
+    return is_repeat + 1;
+  case '.':
+    return (is_repeat && p[2] == *p) ? 3 : 1;
+  case '$':
+    return opt_cc1_asm_pp;
+  case '(':
+  case ')':
+  case ',':
+  case ':':
+  case ';':
+  case '?':
+  case '@':
+  case '[':
+  case '\\':
+  case ']':
+  case '`':
+  case '{':
+  case '}':
+  case '~':
+    return 1;
+  }
+  return 0;
 }
 
 bool is_keyword(Token *tok) {
@@ -551,6 +585,8 @@ Token *tokenize(File *file, Token **end) {
           p += 2;
         } else if (*p == '.') {
           p++;
+        } else if (*p == '$' && opt_cc1_asm_pp) {
+          break;
         } else {
           char *pos;
           if (!is_ident2(decode_utf8(&pos, p)))
