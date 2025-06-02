@@ -400,18 +400,6 @@ static MacroArg *read_macro_arg_one(Token **rest, Token *tok, bool read_rest) {
   Token *start = tok;
 
   for (;;) {
-    pop_macro_lock(tok);
-    if (locked_macros && tok->kind == TK_IDENT) {
-      Macro *m = find_macro(tok);
-      if (m && m->is_locked)
-        tok->dont_expand = true;
-    }
-
-    if (is_hash(tok) && !locked_macros) {
-      tok = directives(&cur, tok);
-      continue;
-    }
-
     if (level == 0 && equal(tok, ")"))
       break;
     if (level == 0 && !read_rest && equal(tok, ","))
@@ -438,11 +426,7 @@ static MacroArg *read_macro_arg_one(Token **rest, Token *tok, bool read_rest) {
 }
 
 static MacroArg *
-read_macro_args(Token **rest, Token *tok, MacroParam *params, char *va_args_name) {
-  pop_macro_lock(tok->next);
-  pop_macro_lock(tok->next->next);
-  tok = tok->next->next;
-
+read_macro_args(Token *tok, MacroParam *params, char *va_args_name) {
   MacroArg head = {0};
   MacroArg *cur = &head;
 
@@ -465,7 +449,7 @@ read_macro_args(Token **rest, Token *tok, MacroParam *params, char *va_args_name
     cur->next = arg;
   }
 
-  *rest = skip(tok, ")");
+  skip(tok, ")");
   return head.next;
 }
 
@@ -726,6 +710,40 @@ static Token *insert_funclike(Token *tok, Token *tok2, Token *orig) {
   return head.next;
 }
 
+static Token *prepare_funclike_args(Token *start) {
+  pop_macro_lock(start);
+
+  Token *cur = start;
+  int lvl = 0;
+  for (Token *tok = start->next;;) {
+    if (tok->kind == TK_EOF)
+      error_tok(start, "unterminated list");
+
+    if (!locked_macros && is_hash(tok)) {
+      tok = directives(&cur, tok);
+      continue;
+    }
+    if (locked_macros) {
+      pop_macro_lock(tok);
+      Macro *m = find_macro(tok);
+      if (m && m->is_locked)
+        tok->dont_expand = true;
+    }
+    cur = cur->next = tok;
+
+    if (lvl == 0 && equal(tok, ")"))
+      break;
+
+    if (equal(tok, "("))
+      lvl++;
+    else if (equal(tok, ")"))
+      lvl--;
+
+    tok = tok->next;
+  }
+  return cur->next;
+}
+
 // If tok is a macro, expand it and return true.
 // Otherwise, do nothing and return false.
 static bool expand_macro(Token **rest, Token *tok) {
@@ -756,7 +774,7 @@ static bool expand_macro(Token **rest, Token *tok) {
   if (!m->is_objlike && m->body->kind == TK_EOF && equal(tok, "__attribute__")) {
     char *slash = strrchr(m->body->file->name, '/');
     if (slash && !strcmp(slash + 1, "cdefs.h")) {
-      push_macro_lock(m, skip_paren(skip(tok->next, "(")));
+      push_macro_lock(m, prepare_funclike_args(tok->next));
       return true;
     }
   }
@@ -768,7 +786,8 @@ static bool expand_macro(Token **rest, Token *tok) {
     stop_tok = tok->next;
     *rest = insert_objlike(m->body, stop_tok, tok);
   } else {
-    MacroArg *args = read_macro_args(&stop_tok, tok, m->params, m->va_args_name);
+    stop_tok = prepare_funclike_args(tok->next);
+    MacroArg *args = read_macro_args(tok->next->next, m->params, m->va_args_name);
     Token *body = subst(m->body, args);
     *rest = insert_funclike(body, stop_tok, tok);
   }
