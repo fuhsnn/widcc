@@ -615,10 +615,8 @@ static Type *func_params_old_style(Token **rest, Token *tok, Type *fn_ty) {
         promoted = new_lvar(NULL, ty_int);
       else if (ty->kind == TY_FLOAT)
         promoted = new_lvar(NULL, ty_double);
-      else if (ty->kind == TY_ARRAY || ty->kind == TY_VLA)
-        ty = pointer_to(ty->base);
-      else if (ty->kind == TY_FUNC)
-        ty = pointer_to(ty);
+      else
+        ty = ptr_decay(ty);
 
       Obj *var = new_lvar(get_ident(name), ty);
       if (promoted) {
@@ -691,17 +689,8 @@ static Type *func_params(Token **rest, Token *tok, Type *ty) {
 
     chain_expr(&expr, compute_vla_size(ty2, tok));
 
-    if (ty2->kind == TY_ARRAY || ty2->kind == TY_VLA) {
-      // "array of T" is converted to "pointer to T" only in the parameter
-      // context. For example, *argv[] is converted to **argv by this.
-      ty2 = pointer_to(ty2->base);
-    } else if (ty2->kind == TY_FUNC) {
-      // Likewise, a function is converted to a pointer to a function
-      // only in the parameter context.
-      ty2 = pointer_to(ty2);
-    }
     char *var_name = name ? get_ident(name) : NULL;
-    cur = cur->param_next = new_lvar(var_name, ty2);
+    cur = cur->param_next = new_lvar(var_name, ptr_decay(ty2));
   }
   leave_scope();
   add_type(expr);
@@ -3108,10 +3097,8 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
 
       if (arg->ty->kind == TY_FLOAT)
         arg = new_cast(arg, ty_double);
-      else if (arg->ty->kind == TY_ARRAY || arg->ty->kind == TY_VLA)
-        arg = new_cast(arg, pointer_to(arg->ty->base));
-      else if (arg->ty->kind == TY_FUNC)
-        arg = new_cast(arg, pointer_to(arg->ty));
+      else
+        ptr_convert(&arg);
     }
 
     add_type(arg);
