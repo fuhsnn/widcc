@@ -67,6 +67,10 @@ bool is_numeric(Type *ty) {
   return is_integer(ty) || is_flonum(ty);
 }
 
+bool is_array(Type *ty) {
+  return ty->kind == TY_ARRAY || ty->kind == TY_VLA;
+}
+
 bool is_bitfield(Node *node) {
   return node->kind == ND_MEMBER && node->member->is_bitfield;
 }
@@ -166,6 +170,22 @@ Type *array_to_pointer(Type *ty) {
   if (ty->base && ty->kind != TY_PTR)
     return pointer_to(ty->base);
   return ty;
+}
+
+Type *ptr_decay(Type *ty) {
+  if (is_array(ty))
+    return pointer_to(ty->base);
+  else if (ty->kind == TY_FUNC)
+    return pointer_to(ty);
+  return ty;
+}
+
+void ptr_convert(Node **node) {
+  add_type(*node);
+  Type *orig = (*node)->ty;
+  Type *ty = ptr_decay(orig);
+  if (ty != orig)
+    *node = new_cast(*node, ty);
 }
 
 Type *func_type(Type *return_ty) {
@@ -339,17 +359,16 @@ void add_type(Node *node) {
     node->ty = ty_int;
     return;
   case ND_ADD:
-  case ND_SUB:
-    if (node->lhs->ty->base) {
-      if (node->lhs->ty->kind != TY_PTR)
-        node->lhs = new_cast(node->lhs, pointer_to(node->lhs->ty->base));
-      node->rhs = new_cast(node->rhs, ty_ullong);
-      node->ty = node->lhs->ty;
+  case ND_SUB: {
+    Node *ptr = node->lhs->ty->base ? node->lhs : node->rhs->ty->base ? node->rhs : NULL;
+    if (ptr) {
+      node->ty = ptr->ty;
       return;
     }
     usual_arith_conv(&node->lhs, &node->rhs, false);
     node->ty = node->lhs->ty;
     return;
+  }
   case ND_MUL:
   case ND_DIV:
   case ND_MOD:
