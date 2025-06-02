@@ -455,15 +455,22 @@ extern Type *ty_float;
 extern Type *ty_double;
 extern Type *ty_ldouble;
 
+extern Type *ty_size_t;
+extern Type *ty_intptr_t;
+extern Type *ty_ptrdiff_t;
+
 bool is_integer(Type *ty);
 bool is_flonum(Type *ty);
 bool is_numeric(Type *ty);
+bool is_array(Type *ty);
 bool is_bitfield(Node *node);
 bool is_compatible(Type *t1, Type *t2);
 bool is_const_expr(Node *node, int64_t *val);
 void init_ty_lp64(void);
 Type *copy_type(Type *ty);
 Type *pointer_to(Type *base);
+Type *ptr_decay(Type *ty);
+void ptr_convert(Node **node);
 Type *func_type(Type *return_ty);
 Type *array_of(Type *base, int size);
 Type *vla_of(Type *base, Node *expr);

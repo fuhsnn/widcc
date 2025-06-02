@@ -209,6 +209,13 @@ static Node *new_num(int64_t val, Token *tok) {
   return node;
 }
 
+static Node *new_intptr_t(int64_t val, Token *tok) {
+  Node *node = new_node(ND_NUM, tok);
+  node->val = val;
+  node->ty = ty_intptr_t;
+  return node;
+}
+
 static Node *new_long(int64_t val, Token *tok) {
   Node *node = new_node(ND_NUM, tok);
   node->val = val;
@@ -2043,7 +2050,7 @@ static int64_t eval(Node *node) {
 static int64_t eval2(Node *node, char ***label) {
   switch (node->kind) {
   case ND_ADD:
-    return eval2(node->lhs, label) + eval(node->rhs);
+    return eval2(node->lhs, label) + eval2(node->rhs, label);
   case ND_SUB:
     return eval2(node->lhs, label) - eval(node->rhs);
   case ND_MUL:
@@ -2554,25 +2561,22 @@ static Node *new_add(Node *lhs, Node *rhs, Token *tok) {
   if (is_numeric(lhs->ty) && is_numeric(rhs->ty))
     return new_binary(ND_ADD, lhs, rhs, tok);
 
-  if (lhs->ty->base && rhs->ty->base)
-    error_tok(tok, "invalid operands");
+  ptr_convert(&lhs);
+  ptr_convert(&rhs);
 
-  // Canonicalize `num + ptr` to `ptr + num`.
-  if (!lhs->ty->base && rhs->ty->base) {
-    Node *tmp = lhs;
-    lhs = rhs;
-    rhs = tmp;
-  }
+  Node **ofs = is_integer(lhs->ty) ? &lhs : is_integer(rhs->ty) ? &rhs : NULL;
+  Node *ptr = lhs->ty->base ? lhs : rhs->ty->base ? rhs : NULL;
 
-  // VLA + num
-  if (lhs->ty->base->kind == TY_VLA) {
-    rhs = new_binary(ND_MUL, rhs, new_var_node(lhs->ty->base->vla_size, tok), tok);
+  if (ptr && ofs) {
+    if (ptr->ty->base->kind == TY_VLA)
+      *ofs = new_binary(ND_MUL, *ofs, new_var_node(ptr->ty->base->vla_size, tok), tok);
+    else
+      *ofs = new_binary(ND_MUL, *ofs, new_intptr_t(ptr->ty->base->size, tok), tok);
+
     return new_binary(ND_ADD, lhs, rhs, tok);
   }
 
-  // ptr + num
-  rhs = new_binary(ND_MUL, rhs, new_long(lhs->ty->base->size, tok), tok);
-  return new_binary(ND_ADD, lhs, rhs, tok);
+  error_tok(tok, "invalid operands");
 }
 
 // Like `+`, `-` is overloaded for the pointer type.
@@ -2584,23 +2588,24 @@ static Node *new_sub(Node *lhs, Node *rhs, Token *tok) {
   if (is_numeric(lhs->ty) && is_numeric(rhs->ty))
     return new_binary(ND_SUB, lhs, rhs, tok);
 
-  // VLA - num
-  if (lhs->ty->base->kind == TY_VLA) {
-    rhs = new_binary(ND_MUL, rhs, new_var_node(lhs->ty->base->vla_size, tok), tok);
-    return new_binary(ND_SUB, lhs, rhs, tok);
-  }
+  ptr_convert(&lhs);
+  ptr_convert(&rhs);
 
   // ptr - num
   if (lhs->ty->base && is_integer(rhs->ty)) {
-    rhs = new_binary(ND_MUL, rhs, new_long(lhs->ty->base->size, tok), tok);
+    if (lhs->ty->base->kind == TY_VLA)
+      rhs = new_binary(ND_MUL, rhs, new_var_node(lhs->ty->base->vla_size, tok), tok);
+    else
+      rhs = new_binary(ND_MUL, rhs, new_intptr_t(lhs->ty->base->size, tok), tok);
+
     return new_binary(ND_SUB, lhs, rhs, tok);
   }
 
   // ptr - ptr, which returns how many elements are between the two.
   if (lhs->ty->base && rhs->ty->base) {
     int sz = lhs->ty->base->size;
-    Node *node = new_binary(ND_SUB, new_cast(lhs, ty_llong), new_cast(rhs, ty_llong), tok);
-    return new_binary(ND_DIV, node, new_num(sz, tok), tok);
+    Node *node = new_binary(ND_SUB, new_cast(lhs, ty_intptr_t), new_cast(rhs, ty_intptr_t), tok);
+    return new_cast(new_binary(ND_DIV, node, new_num(sz, tok), tok), ty_ptrdiff_t);
   }
 
   error_tok(tok, "invalid operands");
