@@ -1188,9 +1188,9 @@ static void gen_expr(Node *node) {
   }
   }
 
-  gen_expr(node->lhs);
-  push();
   gen_expr(node->rhs);
+  push();
+  gen_expr(node->lhs);
   pop("%rcx");
 
   bool is_r64 = node->lhs->ty->size == 8 || node->lhs->ty->base;
@@ -1202,15 +1202,13 @@ static void gen_expr(Node *node) {
     println("  add %s, %s", cx, ax);
     return;
   case ND_SUB:
-    println("  sub %s, %s", ax, cx);
-    println("  mov %s, %s", cx, ax);
+    println("  sub %s, %s", cx, ax);
     return;
   case ND_MUL:
     println("  imul %s, %s", cx, ax);
     return;
   case ND_DIV:
   case ND_MOD:
-    println("  xchg %s, %s", cx, ax);
     if (node->ty->is_unsigned) {
       println("  xor %%edx, %%edx");
       println("  div %s", cx);
@@ -1250,21 +1248,18 @@ static void gen_expr(Node *node) {
     case ND_GT: ins = is_unsigned ? "seta" : "setg"; break;
     case ND_GE: ins = is_unsigned ? "setae" : "setge"; break;
     }
-    println("  cmp %s, %s", ax, cx);
+    println("  cmp %s, %s", cx, ax);
     println("  %s %%al", ins);
     println("  movzbl %%al, %%eax");
     return;
   }
   case ND_SHL:
-    println("  xchg %s, %s", cx, ax);
     println("  shl %%cl, %s", ax);
     return;
   case ND_SHR:
-    println("  xchg %s, %s", cx, ax);
     println("  shr %%cl, %s", ax);
     return;
   case ND_SAR:
-    println("  xchg %s, %s", cx, ax);
     println("  sar %%cl, %s", ax);
     return;
   }
