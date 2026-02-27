@@ -1,53 +1,11 @@
 set -eu
 set -o pipefail
 
-# utilities
-
-fix_configure() {
- sed -i 's/^\s*lt_prog_compiler_wl=$/lt_prog_compiler_wl=-Wl,/g' "$1"
- sed -i 's/^\s*lt_prog_compiler_pic=$/lt_prog_compiler_pic=-fPIC/g' "$1"
- sed -i 's/^\s*lt_prog_compiler_static=$/lt_prog_compiler_static=-static/g' "$1"
-}
-
-replace_line() {
- sed -i s/^"$1"$/"$2"/g "$3"
-}
-
-github_tar() {
-  mkdir -p "$2"
-  curl -fL https://github.com/"$1"/"$2"/archive/refs/tags/"$3".tar.gz | tar xz -C "$2" --strip-components=1
-  cd "$2"
-}
-
-github_clone() {
-  git clone --depth 1 --recurse-submodules --shallow-submodules --branch "$3" https://github.com/"$1"/"$2"
-  cd "$2"
-}
-
-git_fetch() {
- mkdir -p "$3" && cd "$3"
- git init
- git remote add origin "$1"
- git fetch --depth 1 origin "$2"
- git checkout FETCH_HEAD
-}
-
-url_tar() {
-  mkdir -p "$2"
-  curl -fL "$1" | tar xz -C "$2" --strip-components=1
-  cd "$2"
-}
-
-install_libtool() {
- url_tar https://ftpmirror.gnu.org/gnu/libtool/libtool-2.5.4.tar.gz __libtool
- fix_configure ./configure
- fix_configure libltdl/configure
- ./configure
- make -j2 install
- cd ../ && rm -rf __libtool
-}
-
-# tests
+if [ "$CC" = /work/widcc/widcc ]; then
+ is_CI=
+ SRC_DIR=`dirname $CC`
+ MUON=$SRC_DIR/muon/build/muon
+fi
 
 test_bash() {
  url_tar https://ftpmirror.gnu.org/gnu/bash/bash-5.3-rc1.tar.gz bash
@@ -186,7 +144,7 @@ test_perl() {
  export NO_NETWORK_TESTING=1
  ./Configure -des -Dcc="$CC" -Accflags=-fPIC -Alibs="-lpthread -ldl -lm -lcrypt -lutil -lc" \
    -Alibpth="/usr/local/lib /lib /usr/lib /lib64 /usr/lib64 /lib/x86_64-linux-gnu /usr/lib/x86_64-linux-gnu"
- make -j4 test_prep && HARNESS_OPTIONS=j4 make test_harness
+ make -j6 test_prep && HARNESS_OPTIONS=j6 make test_harness
 }
 
 test_php() {
@@ -303,6 +261,161 @@ build_gcc() {
 build_nano() {
  url_tar https://www.nano-editor.org/dist/v8/nano-8.4.tar.gz nano
  CFLAGS=-std=c99 ./configure && make
+}
+
+# utilities
+
+fix_configure() {
+ find . -name 'configure' -exec sed -i 's|^\s*lt_prog_compiler_wl=$|lt_prog_compiler_wl=-Wl,|g' {} +
+ find . -name 'configure' -exec sed -i 's|^\s*lt_prog_compiler_pic=$|lt_prog_compiler_pic=-fPIC|g' {} +
+ find . -name 'configure' -exec sed -i 's|^\s*lt_prog_compiler_static=$|lt_prog_compiler_static=-static|g' {} +
+}
+
+fix_and_configure() {
+ fix_configure
+ ./configure "$@"
+}
+
+cmake_init() {
+ mkdir cmakebuild && cd cmakebuild
+ cmake ../ -DCMAKE_C_COMPILER=$CC -DCMAKE_PREFIX_PATH=/usr/lib/x86_64-linux-gnu \
+  -DCMAKE_C_COMPILE_OPTIONS_PIC=-fPIC -DCMAKE_C_COMPILE_OPTIONS_PIE=-fPIE "$@"
+}
+
+replace_line() {
+ sed -i s/^"$1"$/"$2"/g "$3"
+}
+
+wget_timeout_noretry() {
+ wget -c -T30 -t2 $@
+}
+
+wget_loop() {
+ local URL="$1"
+
+ while ! wget_timeout_noretry $URL -O "$2"; do
+  URL=`echo $URL | sed -e 's|mirrors.edge.kernel.org|ftp.gnu.org|g'`
+  URL=`echo $URL | sed -e 's|ftpmirror.gnu.org|mirrors.edge.kernel.org|g'`
+ done
+}
+
+get_tar() {
+  mkdir "$2"
+  local F="$2".tar"$1"
+
+  if ! [ -f $F ]; then
+   wget_loop "$3" $F
+  fi
+  tar -xf $F -C "$2" --strip-components=1
+  cd "$2"
+}
+
+github_clone() {
+  git clone --depth 1 --recurse-submodules --shallow-submodules --branch "$3" https://github.com/"$1"/"$2"
+  cd "$2"
+}
+
+git_fetch() {
+ mkdir -p "$3" && cd "$3"
+ git init
+ if git remote add origin "$1"; then
+   git fetch --depth 1 origin "$2"
+   git checkout FETCH_HEAD
+ else
+   git checkout -f "$2"
+ fi
+}
+
+codeberg_tar() {
+ get_tar .gz "$2" https://codeberg.org/"$1"/"$2"/archive/"$3".tar.gz
+}
+
+github_tar() {
+ get_tar .gz "$2" https://github.com/"$1"/"$2"/archive/refs/tags/"$3".tar.gz
+}
+
+gitlab_tar() {
+ get_tar .bz "$2" https://"$1"/"$2"/-/archive/"$3"/"$2"-"$3".tar.bz2
+}
+
+url_tar() {
+ get_tar .gz "$2" "$1"
+}
+
+url_bz() {
+ get_tar .bz "$2" "$1"
+}
+
+url_lz() {
+ get_tar .lz "$2" "$1"
+}
+
+url_xz() {
+ get_tar .xz "$2" "$1"
+}
+
+shared_binutils() {
+ url_lz https://ftpmirror.gnu.org/gnu/binutils/binutils-with-gold-2.46.tar.lz binutils
+ sed -i 's|^# define __attribute__(x)$||g' include/ansidecl.h
+}
+
+shared_muon() {
+ git_fetch https://github.com/muon-build/muon dea94cf9546627b7e78617cf53b95a65a579f528 muon
+ cat << EOF >> src/script/runtime/toolchains.meson
+toolchain.register_compiler(
+    'widcc',
+    inherit: 'posix',
+    linker: 'ld',
+    detect: func(out str) -> int
+        return 'widcc' in out ? 100 : 0
+    endfunc,
+    handlers: {
+        'print_search_dirs': ['-print-search-dirs'],
+    },
+)
+EOF
+ sh ./bootstrap.sh build
+ build/muon-bootstrap setup -Dlibpkgconf=disabled ${1:-} build
+ build/muon-bootstrap -C build samu
+}
+
+ci_muon() {
+ shared_muon -Dmeson-docs=disabled -Dmeson-tests=disabled
+}
+
+ci_libtool() {
+ url_xz https://ftpmirror.gnu.org/gnu/libtool/libtool-2.5.4.tar.xz __libtool
+ fix_and_configure
+ make install -j2
+ cd ../ && rm -rf __libtool
+}
+
+use_stdbit() {
+ sed -i 's|^'"$1"'|#include <stdbit.h>\n'"$1"'|g' "$2"
+
+ sed -i 's|__builtin_ctzll(|(int)stdc_trailing_zeros_ull(|g' "$2"
+ sed -i 's|__builtin_ctzl(|(int)stdc_trailing_zeros_ul(|g' "$2"
+ sed -i 's|__builtin_ctz(|(int)stdc_trailing_zeros_ui(|g' "$2"
+ sed -i 's|__builtin_clzll(|(int)stdc_leading_zeros_ull(|g' "$2"
+ sed -i 's|__builtin_clzl(|(int)stdc_leading_zeros_ul(|g' "$2"
+ sed -i 's|__builtin_clz(|(int)stdc_leading_zeros_ui(|g' "$2"
+ sed -i 's|__builtin_popcountll(|(int)stdc_count_ones_ull(|g' "$2"
+ sed -i 's|__builtin_popcountl(|(int)stdc_count_ones_ul(|g' "$2"
+ sed -i 's|__builtin_popcount(|(int)stdc_count_ones_ui(|g' "$2"
+}
+
+use_stdbit2() {
+ sed -i 's|^'"$1"'|#include <stdbit.h>\n'"$1"'|g' "$2"
+
+ sed -i 's|__builtin_ctzll|(int)stdc_trailing_zeros_ull|g' "$2"
+ sed -i 's|__builtin_ctzl|(int)stdc_trailing_zeros_ul|g' "$2"
+ sed -i 's|__builtin_ctz|(int)stdc_trailing_zeros_ui|g' "$2"
+ sed -i 's|__builtin_clzll|(int)stdc_leading_zeros_ull|g' "$2"
+ sed -i 's|__builtin_clzl|(int)stdc_leading_zeros_ul|g' "$2"
+ sed -i 's|__builtin_clz|(int)stdc_leading_zeros_ui|g' "$2"
+ sed -i 's|__builtin_popcountll|(int)stdc_count_ones_ull|g' "$2"
+ sed -i 's|__builtin_popcountl|(int)stdc_count_ones_ul|g' "$2"
+ sed -i 's|__builtin_popcount|(int)stdc_count_ones_ui|g' "$2"
 }
 
 # run a test
