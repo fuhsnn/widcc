@@ -266,7 +266,20 @@ Node *new_cast(Node *expr, Type *ty) {
   return node;
 }
 
-static Node *to_bool(Node *expr) {
+static Node *cond_cast(Node *expr) {
+  switch (expr->kind) {
+  case ND_EQ:
+  case ND_NE:
+  case ND_LT:
+  case ND_LE:
+  case ND_GT:
+  case ND_GE:
+  case ND_LOGAND:
+  case ND_LOGOR:
+  case ND_NOT:
+    return expr;
+  }
+  ptr_convert(&expr);
   return new_cast(expr, ty_bool);
 }
 
@@ -1731,7 +1744,7 @@ static Node *stmt(Token **rest, Token *tok, bool chained) {
   if (equal(tok, "if")) {
     Node *node = new_node(ND_IF, tok);
     tok = skip(tok->next, "(");
-    node->cond = to_bool(expr(&tok, tok));
+    node->cond = cond_cast(expr(&tok, tok));
     tok = skip(tok, ")");
     node->then = stmt(&tok, tok, true);
     if (equal(tok, "else"))
@@ -1844,7 +1857,7 @@ static Node *stmt(Token **rest, Token *tok, bool chained) {
     }
 
     if (!equal(tok, ";"))
-      node->cond = to_bool(expr(&tok, tok));
+      node->cond = cond_cast(expr(&tok, tok));
     tok = skip(tok, ";");
 
     if (!equal(tok, ")"))
@@ -1862,7 +1875,7 @@ static Node *stmt(Token **rest, Token *tok, bool chained) {
   if (equal(tok, "while")) {
     Node *node = new_node(ND_FOR, tok);
     tok = skip(tok->next, "(");
-    node->cond = to_bool(expr(&tok, tok));
+    node->cond = cond_cast(expr(&tok, tok));
     tok = skip(tok, ")");
 
     loop_body(rest, tok, node);
@@ -1876,7 +1889,7 @@ static Node *stmt(Token **rest, Token *tok, bool chained) {
 
     tok = skip(tok, "while");
     tok = skip(tok, "(");
-    node->cond = to_bool(expr(&tok, tok));
+    node->cond = cond_cast(expr(&tok, tok));
     tok = skip(tok, ")");
     *rest = skip(tok, ";");
     return node;
@@ -2414,7 +2427,7 @@ static Node *conditional(Token **rest, Token *tok) {
     Obj *var = new_lvar(NULL, cond->ty);
     Node *lhs = new_binary(ND_ASSIGN, new_var_node(var, tok), cond, tok);
     Node *rhs = new_node(ND_COND, tok);
-    rhs->cond = to_bool(new_var_node(var, tok));
+    rhs->cond = cond_cast(new_var_node(var, tok));
     rhs->then = new_var_node(var, tok);
     rhs->els = conditional(rest, tok->next->next);
     leave_scope();
@@ -2422,7 +2435,7 @@ static Node *conditional(Token **rest, Token *tok) {
   }
 
   Node *node = new_node(ND_COND, tok);
-  node->cond = to_bool(cond);
+  node->cond = cond_cast(cond);
   node->then = expr(&tok, tok->next);
   tok = skip(tok, ":");
   node->els = conditional(rest, tok);
@@ -2434,8 +2447,8 @@ static Node *log_or(Token **rest, Token *tok) {
   Node *node = log_and(&tok, tok);
   while (equal(tok, "||")) {
     Token *start = tok;
-    node = new_binary(ND_LOGOR, to_bool(node),
-                      to_bool(log_and(&tok, tok->next)), start);
+    node = new_binary(ND_LOGOR, cond_cast(node),
+                      cond_cast(log_and(&tok, tok->next)), start);
   }
   *rest = tok;
   return node;
@@ -2446,8 +2459,8 @@ static Node *log_and(Token **rest, Token *tok) {
   Node *node = bit_or(&tok, tok);
   while (equal(tok, "&&")) {
     Token *start = tok;
-    node = new_binary(ND_LOGAND, to_bool(node),
-                      to_bool(bit_or(&tok, tok->next)), start);
+    node = new_binary(ND_LOGAND, cond_cast(node),
+                      cond_cast(bit_or(&tok, tok->next)), start);
   }
   *rest = tok;
   return node;
@@ -2730,7 +2743,7 @@ static Node *unary(Token **rest, Token *tok) {
   }
 
   if (equal(tok, "!"))
-    return new_unary(ND_NOT, to_bool(cast(rest, tok->next)), tok);
+    return new_unary(ND_NOT, cond_cast(cast(rest, tok->next)), tok);
 
   if (equal(tok, "~"))
     return new_unary(ND_BITNOT, cast(rest, tok->next), tok);
@@ -3112,14 +3125,13 @@ static Node *funcall(Token **rest, Token *tok, Node *fn) {
       if (!ty->is_variadic && !ty->is_oldstyle)
         error_tok(tok, "too many arguments");
 
-      if (arg->ty->kind == TY_FLOAT)
+      if (is_integer(arg->ty) && arg->ty->size < 4)
+        arg = new_cast(arg, ty_int);
+      else if (arg->ty->kind == TY_FLOAT)
         arg = new_cast(arg, ty_double);
       else
         ptr_convert(&arg);
     }
-
-    add_type(arg);
-
     cur = cur->param_next = new_lvar(NULL, arg->ty);
     cur->arg_expr = arg;
   }
