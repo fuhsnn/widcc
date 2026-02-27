@@ -1,3 +1,6 @@
+#ifndef WIDCC_H
+#define WIDCC_H
+
 #define _POSIX_C_SOURCE 200809L
 #include <assert.h>
 #include <ctype.h>
@@ -17,6 +20,10 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+#ifdef __clang__
+#pragma clang diagnostic ignored "-Wswitch"
+#endif
 
 #define MAX(x, y) ((x) < (y) ? (y) : (x))
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
@@ -550,3 +557,5 @@ extern bool opt_nodefaultlibs;
 extern bool opt_nolibc;
 extern char *opt_use_ld;
 extern char *opt_use_as;
+
+#endif

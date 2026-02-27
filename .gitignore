@@ -3,9 +3,9 @@
 **/*.o
 **/*.s
 **/a.out
-/tmp*
-/thirdparty
-/slimcc
 /test/*.exe
-/test/c23/*.exe
-/stage2
+/widcc
+/widcc-stage2
+/widcc-asan
+/widcc-filc
+/widcc-lto*

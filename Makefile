@@ -2,9 +2,9 @@ SRCS=codegen.c hashmap.c main.c parse.c platform.c preprocess.c strings.c tokeni
 
 TEST_SRCS!=ls test/*.c
 
-TEST_FLAGS=-Itest -std=c23
+TEST_FLAGS=-Itest -std=gnu11
 
-.SUFFIXES: .exe .stage2.o .stage2.exe .asan.o .asan.exe
+.SUFFIXES: .exe .stage2.o .stage2.exe .asan.o .asan.exe .filc.o .filc.exe
 
 # Stage 1
 
@@ -76,27 +76,55 @@ $(TESTS_ASAN): widcc-asan test/host/common.o
 test-asan: $(TESTS_ASAN)
 	for i in $(TESTS_ASAN); do echo $$i; ./$$i >/dev/null || exit 1; echo; done
 	$(SHELL) scripts/test_driver.sh $(PWD)/widcc-asan $(CC)
-	$(MAKE) widcc CC=./widcc-asan -B
+	./widcc-asan scripts/amalgamation.c -c -o/dev/null
 	./widcc-asan -hashmap-test
+
+test-misc: widcc-asan test/host/common.o
+	$(SHELL) scripts/test_abi.sh $(PWD)/widcc-asan $(CC)
+	$(SHELL) scripts/test_abi.sh $(CC) $(PWD)/widcc-asan
+	$(SHELL) scripts/test_include_next.sh $(PWD)/widcc-asan
+	FILE=file $(SHELL) scripts/test_linker.sh $(PWD)/widcc-asan
+
+# Fil-C build
+
+OBJS_FILC=$(SRCS:.c=.filc.o)
+
+$(OBJS_FILC): widcc.h
+
+.c.filc.o:
+	$(FILC) $(CFLAGS) -g -o $@ -c $<
+
+widcc-filc: $(OBJS_FILC)
+	$(FILC) $(CFLAGS) -g -o $@ $(OBJS_FILC) $(LDFLAGS)
+
+TESTS_FILC=$(TEST_SRCS:.c=.filc.exe)
+
+$(TESTS_FILC): widcc-filc test/host/common.o
+
+.c.filc.exe:
+	./widcc-filc $(TEST_FLAGS) -o $@ $< test/host/common.o -pthread
+
+test-filc: $(TESTS_FILC)
+	for i in $(TESTS_FILC); do echo $$i; ./$$i >/dev/null || exit 1; echo; done
+	$(SHELL) scripts/test_driver.sh $(PWD)/widcc-filc $(CC)
+	./widcc-filc scripts/amalgamation.c -c -o/dev/null
+	./widcc-filc -hashmap-test
 
 # Misc.
 
 test-all: test test-stage2
 
-warn: $(SRCS)
-	$(CC) -fsyntax-only -Wall -Wpedantic -Wno-switch $(CFLAGS) $(SRCS)
+widcc-lto: $(SRCS) widcc.h
+	$(CC) -O2 -flto=auto -fvisibility=hidden scripts/amalgamation.c -o $@
 
-lto: clean
-	$(MAKE) CFLAGS="-O2 -flto=auto -Wno-switch"
+widcc-lto-je: $(SRCS) widcc.h
+	$(CC) -O2 -flto=auto -fvisibility=hidden scripts/amalgamation.c -o $@ -ljemalloc
 
-lto-je: clean
-	$(MAKE) CFLAGS="-O2 -flto=auto -Wno-switch" LDFLAGS="-ljemalloc"
-
-lto-mi: clean
-	$(MAKE) CFLAGS="-O2 -flto=auto -Wno-switch" LDFLAGS="-lmimalloc"
+widcc-lto-mi: $(SRCS) widcc.h
+	$(CC) -O2 -flto=auto -fvisibility=hidden scripts/amalgamation.c -o $@ -lmimalloc
 
 clean:
-	rm -f widcc widcc-stage2 widcc-asan
-	rm -f *.o test/*.o test/*.exe test/host/*.o
+	rm -f widcc widcc-stage2 widcc-asan widcc-filc widcc-lto widcc-lto-je widcc-lto-mi
+	rm -f *.o test/*.o test/*.exe test/host/*.o test/abi/*.o
 
-.PHONY: test clean test-stage2 test-asan
+.PHONY: clean test test-stage2 test-all test-asan test-filc

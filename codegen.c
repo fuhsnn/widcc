@@ -18,11 +18,11 @@ static int rtn_ptr_ofs;
 static int lvar_stk_sz;
 static int peak_stk_usage;
 
-struct {
+static struct {
   int *data;
   int depth;
   int capacity;
-} static tmp_stk;
+} tmp_stk;
 
 static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
