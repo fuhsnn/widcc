@@ -116,7 +116,7 @@ static int64_t eval(Node *node);
 static int64_t eval2(Node *node, char ***label);
 static Node *assign(Token **rest, Token *tok);
 static Node *log_or(Token **rest, Token *tok);
-static long double eval_double(Node *node);
+static long_double_t eval_double(Node *node);
 static Node *conditional(Token **rest, Token *tok);
 static Node *log_and(Token **rest, Token *tok);
 static Node *bit_or(Token **rest, Token *tok);
@@ -181,6 +181,10 @@ static Type *find_tag(Token *tok) {
       return ty;
   }
   return NULL;
+}
+
+static bool equal_substr(char *loc, size_t len, char *op) {
+  return strlen(op) == len && !memcmp(loc, op, len);
 }
 
 static Node *new_node(NodeKind kind, Token *tok) {
@@ -1585,22 +1589,19 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
 
   if (!init->expr)
     return cur;
-  add_type(init->expr);
 
-  switch(ty->kind) {
-  case TY_FLOAT:
-    *(float *)(buf + offset) = eval_double(init->expr);
-    return cur;
-  case TY_DOUBLE:
-    *(double *)(buf + offset) = eval_double(init->expr);
-    return cur;
-  case TY_LDOUBLE:
-    *(long double *)(buf + offset) = eval_double(init->expr);
+  Node *node = new_cast(init->expr, init->ty);
+  add_type(node);
+
+  if (is_flonum(init->ty)) {
+    FPVal fval = {0};
+    eval_fp(node, &fval);
+    memcpy(buf + offset, &fval, init->ty->size);
     return cur;
   }
 
   char **label = NULL;
-  uint64_t val = eval2(init->expr, &label);
+  uint64_t val = eval2(node, &label);
 
   if (!label) {
     write_buf(buf + offset, val, ty->size);
@@ -2262,44 +2263,89 @@ int64_t const_expr(Token **rest, Token *tok) {
   return const_expr2(rest, tok, NULL);
 }
 
-static long double eval_double(Node *node) {
-  if (is_integer(node->ty)) {
-    if (node->ty->is_unsigned)
-      return (unsigned long)eval(node);
-    return eval(node);
+static long_double_t eval_fp_cast(long_double_t fval, Type *ty) {
+  switch (ty->kind) {
+  case TY_FLOAT: return (float)fval;
+  case TY_DOUBLE: return (double)fval;
+  case TY_LDOUBLE: return fval;
+  }
+  internal_error();
+}
+
+static void build_math_constant(Node *node, FPVal *fval) {
+  switch (node->math_constant) {
+  case MATH_CONSTANT_NANF: fval->chunk[0] = 0x7FC00000; return;
+  case MATH_CONSTANT_INFF: fval->chunk[0] = 0x7F800000; return;
+  case MATH_CONSTANT_NANSF: fval->chunk[0] = 0x7FA00000; return;
+  case MATH_CONSTANT_NANS: fval->chunk[0] = 0x7FF4000000000000; return;
+  case MATH_CONSTANT_NANSL:
+    fval->chunk[0] = 0xA000000000000000;
+    fval->chunk[1] = 0x7FFF;
+    return;
+  }
+  internal_error();
+}
+
+void eval_fp(Node *node, FPVal *fval) {
+  while (node->kind == ND_CAST && node->ty->kind == node->lhs->ty->kind)
+    node = node->lhs;
+
+  if (node->kind == ND_NUM && node->math_constant) {
+    build_math_constant(node, fval);
+    return;
   }
 
+  long_double_t v = eval_double(node);
+  switch (node->ty->kind) {
+  case TY_FLOAT: fval->f = (float)v; return;
+  case TY_DOUBLE: fval->d = (double)v; return;
+  case TY_LDOUBLE: fval->ld = v; return;
+  }
+  internal_error();
+}
+
+static long_double_t eval_double(Node *node) {
+  if (eval_recover && *eval_recover)
+    return false;
+
+  Type *ty = node->ty;
+  Node *lhs = node->lhs;
+  Node *rhs = node->rhs;
+
   switch (node->kind) {
-  case ND_ADD:
-    return eval_double(node->lhs) + eval_double(node->rhs);
-  case ND_SUB:
-    return eval_double(node->lhs) - eval_double(node->rhs);
-  case ND_MUL:
-    return eval_double(node->lhs) * eval_double(node->rhs);
-  case ND_DIV:
-    return eval_double(node->lhs) / eval_double(node->rhs);
+  case ND_ADD: return eval_fp_cast(eval_double(lhs) + eval_double(rhs), ty);
+  case ND_SUB: return eval_fp_cast(eval_double(lhs) - eval_double(rhs), ty);
+  case ND_MUL: return eval_fp_cast(eval_double(lhs) * eval_double(rhs), ty);
+  case ND_DIV: return eval_fp_cast(eval_double(lhs) / eval_double(rhs), ty);
   case ND_POS:
-    return eval_double(node->lhs);
+    return eval_double(lhs);
   case ND_NEG:
-    return -eval_double(node->lhs);
+    return -eval_double(lhs);
   case ND_COND:
-    return eval_double(node->cond) ? eval_double(node->then) : eval_double(node->els);
-  case ND_CHAIN:
+    return eval(node->cond) ? eval_double(node->then) : eval_double(node->els);
   case ND_COMMA:
-    eval_double(node->lhs);
-    return eval_double(node->rhs);
+    eval_void(lhs);
+    return eval_double(rhs);
   case ND_CAST:
-    if (is_flonum(node->lhs->ty)) {
-      if (node->ty->size == 4)
-        return (float)eval_double(node->lhs);
-      if (node->ty->size == 8)
-        return (double)eval_double(node->lhs);
-      return eval_double(node->lhs);
-    }
-    if (node->lhs->ty->size == 8 && node->lhs->ty->is_unsigned)
-      return (uint64_t)eval(node->lhs);
-    return eval(node->lhs);
+    if (is_flonum(lhs->ty))
+      return eval_fp_cast(eval_double(lhs), ty);
+    if (lhs->ty->size == 8 && lhs->ty->is_unsigned)
+      return (uint64_t)eval(lhs);
+    if (is_integer(lhs->ty))
+      return eval(lhs);
+    error_tok(node->tok, "unimplemented cast");
   case ND_NUM:
+    if (node->math_constant) {
+      FPVal fval = {0};
+      build_math_constant(node, &fval);
+
+      switch (node->ty->kind) {
+      case TY_FLOAT: return fval.f;
+      case TY_DOUBLE: return fval.d;
+      case TY_LDOUBLE: return fval.ld;
+      }
+      internal_error();
+    }
     return node->fval;
   }
 
@@ -3342,6 +3388,25 @@ static Node *primary(Token **rest, Token *tok) {
     node->ty = node->var->ty;
     chain_expr(&node, new_var_node(node->var, tok));
     *rest = skip(tok, ")");
+    return node;
+  }
+
+  if (!strncmp(tok->loc, "__builtin_math_constant_", 24)) {
+    *rest = skip(skip(tok->next, "("), ")");
+
+    Node *node = new_node(ND_NUM, tok);
+    char *loc = tok->loc + 24;
+    int len = tok->len - 24;
+
+    if (equal_substr(loc, len, "nanf")) {
+      node->math_constant = MATH_CONSTANT_NANF;
+      node->ty = ty_float;
+    } else if (equal_substr(loc, len, "inff")) {
+      node->math_constant = MATH_CONSTANT_INFF;
+      node->ty = ty_float;
+    } else {
+      error_tok(tok, "unknown math constant");
+    }
     return node;
   }
 

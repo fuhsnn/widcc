@@ -415,8 +415,8 @@ static char f64f80[] = "movsd %xmm0, "LDBUF"; fldl "LDBUF;
 
 static char f80i8[] = SET_TRUNC_MODE "fistps "LDBUF"; movsbl "LDBUF", %eax" RESTORE_MODE;
 static char f80u8[] = SET_TRUNC_MODE "fistps "LDBUF"; movzbl "LDBUF", %eax" RESTORE_MODE;
-static char f80i16[] = SET_TRUNC_MODE "fistps "LDBUF"; movzbl "LDBUF", %eax" RESTORE_MODE;
-static char f80u16[] = SET_TRUNC_MODE "fistpl "LDBUF"; movswl "LDBUF", %eax" RESTORE_MODE;
+static char f80i16[] = SET_TRUNC_MODE "fistps "LDBUF"; movswl "LDBUF", %eax" RESTORE_MODE;
+static char f80u16[] = SET_TRUNC_MODE "fistpl "LDBUF"; movzwl "LDBUF", %eax" RESTORE_MODE;
 static char f80i32[] = SET_TRUNC_MODE "fistpl "LDBUF"; mov "LDBUF", %eax" RESTORE_MODE;
 static char f80u32[] = SET_TRUNC_MODE "fistpl "LDBUF"; mov "LDBUF", %eax" RESTORE_MODE;
 static char f80i64[] = SET_TRUNC_MODE "fistpq "LDBUF"; mov "LDBUF", %rax" RESTORE_MODE;
@@ -781,30 +781,26 @@ static void gen_expr(Node *node) {
   case ND_NULL_EXPR:
     return;
   case ND_NUM: {
-    switch (node->ty->kind) {
-    case TY_FLOAT: {
-      union { float f32; uint32_t u32; } u = { node->fval };
-      println("  mov $%u, %%eax  # float %Lf", u.u32, node->fval);
-      println("  movq %%rax, %%xmm0");
-      return;
-    }
-    case TY_DOUBLE: {
-      union { double f64; uint64_t u64; } u = { node->fval };
-      println("  mov $%lu, %%rax  # double %Lf", u.u64, node->fval);
-      println("  movq %%rax, %%xmm0");
-      return;
-    }
-    case TY_LDOUBLE: {
-      union { long double f80; int32_t i32[3]; } u;
-      memset(&u, 0, sizeof(u));
-      u.f80 = node->fval;
-      println("  movl $%"PRIi32", -16(%%rbp)", u.i32[0]);
-      println("  movl $%"PRIi32", -12(%%rbp)", u.i32[1]);
-      println("  movw $%"PRIi32", -8(%%rbp)", u.i32[2]);
-      return;
-    }
-    }
+    if (is_flonum(node->ty)) {
+      FPVal fval = {0};
+      eval_fp(node, &fval);
 
+      switch (node->ty->kind) {
+      case TY_FLOAT:
+        println("  movl $%"PRIi32", %%eax", fval.chunk32[0]);
+        println("  movd %%eax, %%xmm0");
+        return;
+      case TY_DOUBLE:
+        println("  movq $%"PRIu64", %%rax", fval.chunk[0]);
+        println("  movq %%rax, %%xmm0");
+        return;
+      case TY_LDOUBLE:
+        println("movl $%"PRIi32", -16(%%rbp)", fval.chunk32[0]);
+        println("movl $%"PRIi32", -12(%%rbp)", fval.chunk32[1]);
+        println("movw $%"PRIu16", -8(%%rbp)", (uint16_t)fval.chunk32[2]);
+        return;
+      }
+    }
     println("  mov $%ld, %%rax", node->val);
     return;
   }

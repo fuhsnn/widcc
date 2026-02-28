@@ -485,13 +485,16 @@ void convert_pp_number(Token *tok) {
 
   // If it's not an integer, it must be a floating point constant.
   char *end;
-  long double val = strtold(tok->loc, &end);
-
+  long_double_t val = strtod(tok->loc, &end);
   Type *ty;
   if (*end == 'f' || *end == 'F') {
+    val = strtof(tok->loc, NULL);
     ty = ty_float;
     end++;
   } else if (*end == 'l' || *end == 'L') {
+#ifndef NO_LONG_DOUBLE
+    val = strtold(tok->loc, NULL);
+#endif
     ty = ty_ldouble;
     end++;
   } else {

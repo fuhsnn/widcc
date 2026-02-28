@@ -47,10 +47,17 @@
 #define NORETURN
 #endif
 
+#ifdef NO_LONG_DOUBLE
+typedef double long_double_t;
+#else
+typedef long double long_double_t;
+#endif
+
 typedef struct Type Type;
 typedef struct Node Node;
 typedef struct Member Member;
 typedef struct Relocation Relocation;
+typedef union FPVal FPVal;
 
 //
 // hashmap.c
@@ -127,7 +134,7 @@ struct Token {
   TokenKind kind;   // Token kind
   Token *next;      // Next token
   int64_t val;      // If kind is TK_NUM, its value
-  long double fval; // If kind is TK_NUM, its value
+  long_double_t fval;
   char *loc;        // Token location
   int len;          // Token length
   Type *ty;         // Used if TK_NUM or TK_STR
@@ -342,7 +349,15 @@ struct Node {
 
   // Numeric literal
   int64_t val;
-  long double fval;
+  long_double_t fval;
+  enum {
+    MATH_CONSTANT_NOT = 0,
+    MATH_CONSTANT_NANF,
+    MATH_CONSTANT_INFF,
+    MATH_CONSTANT_NANSF,
+    MATH_CONSTANT_NANS,
+    MATH_CONSTANT_NANSL,
+  } math_constant;
 };
 
 // Represents a block scope.
@@ -362,11 +377,21 @@ struct Scope {
 
 Node *new_cast(Node *expr, Type *ty);
 int64_t const_expr(Token **rest, Token *tok);
+void eval_fp(Node *node, FPVal *fval);
 Obj *parse(Token *tok);
 Token *skip_paren(Token *tok);
+
 //
 // type.c
 //
+
+union FPVal {
+  uint64_t chunk[2];
+  uint32_t chunk32[4];
+  long_double_t ld;
+  double d;
+  float f;
+};
 
 typedef enum {
   TY_VOID,
