@@ -213,10 +213,10 @@ bool is_keyword(Token *tok) {
     for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
       hashmap_put(&map, kw[i], (void *)1);
 
-    if (opt_std == STD_NONE)
+    if (!is_iso_std)
       hashmap_put(&map, "asm", (void *)1);
-    if (opt_std == STD_NONE || opt_std >= STD_C23)
-      hashmap_put(&map, "typeof", (void *)1);      
+    if (opt_std >= STD_C23 || !is_iso_std)
+      hashmap_put(&map, "typeof", (void *)1);
   }
 
   return hashmap_get2(&map, tok->loc, tok->len);

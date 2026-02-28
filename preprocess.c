@@ -1219,20 +1219,6 @@ static Token *base_file_macro(Token *start) {
   return tok;
 }
 
-static Token *stdver_macro(Token *tok) {
-  tok->kind = TK_PP_NUM;
-  tok->len = 7;
-
-  switch (opt_std) {
-  case STD_C99: tok->loc = "199901L"; break;
-  case STD_C11: tok->loc = "201112L"; break;
-  case STD_C17: tok->loc = "201710L"; break;
-  case STD_C23: tok->loc = "202311L"; break;
-  default: tok->loc = "201710L";
-  }
-  return tok;
-}
-
 static Token *pragma_macro(Token *start) {
   Token *tok = start->next;
   Token *str;
@@ -1366,7 +1352,6 @@ void init_macros(void) {
   add_builtin("__COUNTER__", counter_macro);
   add_builtin("__TIMESTAMP__", timestamp_macro);
   add_builtin("__BASE_FILE__", base_file_macro);
-  add_builtin("__STDC_VERSION__", stdver_macro);
 
   add_builtin("_Pragma", pragma_macro);
 
@@ -1521,7 +1506,7 @@ Token *preprocess(Token *tok, char *input_file) {
   if (cond_incl)
     error_tok(cond_incl->tok, "unterminated conditional directive");
 
-  if (opt_E)
+  if (opt_E || opt_M)
     return tok;
 
   return preprocess3(tok);

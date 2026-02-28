@@ -1649,7 +1649,7 @@ static bool is_typename(Token *tok) {
     for (int i = 0; i < sizeof(kw) / sizeof(*kw); i++)
       hashmap_put(&map, kw[i], (void *)1);
 
-    if (opt_std == STD_NONE || opt_std >= STD_C23)
+    if (opt_std >= STD_C23 || !is_iso_std)
       hashmap_put(&map, "typeof", (void *)1);
   }
 

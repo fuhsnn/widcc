@@ -507,6 +507,7 @@ int display_width(char *p, int len);
 
 void platform_init(void);
 void platform_stdinc_paths(StringArray *paths);
+void platform_search_dirs(StringArray *paths);
 void run_assembler(StringArray *as_args, char *input, char *output);
 void run_linker(StringArray *paths, StringArray *inputs, char *output);
 
@@ -515,7 +516,6 @@ void run_linker(StringArray *paths, StringArray *inputs, char *output);
 //
 
 typedef enum {
-  STD_NONE = 0,
   STD_C89,
   STD_C99,
   STD_C11,
@@ -539,6 +539,7 @@ extern char *argv0;
 extern StringArray include_paths;
 extern StringArray iquote_paths;
 extern bool opt_E;
+extern bool opt_M;
 extern bool opt_fpic;
 extern bool opt_fpie;
 extern bool opt_fcommon;
@@ -549,6 +550,7 @@ extern bool opt_data_sections;
 extern bool opt_werror;
 extern bool opt_cc1_asm_pp;
 extern StdVer opt_std;
+extern bool is_iso_std;
 
 extern bool opt_pie;
 extern bool opt_nopie;
@@ -559,10 +561,12 @@ extern bool opt_static;
 extern bool opt_static_pie;
 extern bool opt_static_libgcc;
 extern bool opt_shared;
+extern bool opt_s;
 extern bool opt_nostartfiles;
 extern bool opt_nodefaultlibs;
 extern bool opt_nolibc;
-extern char *opt_use_ld;
-extern char *opt_use_as;
+extern char *default_ld;
+extern char *default_as;
+extern char *dumpmachine_str;
 
 #endif
