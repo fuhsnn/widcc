@@ -104,6 +104,14 @@ test_lua() {
  ../lua -e"_port=true" all.lua # assertion at files.lua:84 fail on CI
 }
 
+test_muon() {
+ shared_muon
+ sed -i "s|\['common/13|#|g" subprojects/meson-tests/meson.build # we don't do pch
+ sed -i "s|\['frameworks/7 gnome|#|g" subprojects/meson-tests/meson.build
+ sed -i "s|'clang'|'clang', 'widcc'|g" 'subprojects/meson-tests/common/44 pkgconfig-gen/meson.build'
+ build/muon -C build test
+}
+
 test_ocaml() {
  github_tar ocaml ocaml 5.3.0
  fix_configure ./configure
@@ -159,7 +167,7 @@ test_php() {
 
  ./buildconf --force
  fix_configure ./configure
- CFLAGS=-std=c99 ./configure --without-pcre-jit --disable-opcache --without-valgrind
+ CFLAGS=-std=gnu99 ./configure --without-pcre-jit --disable-opcache --without-valgrind
  make test NO_INTERACTION=1
 }
 
@@ -171,7 +179,7 @@ test_postgres() {
 
 test_python() {
  github_tar python cpython v3.12.10
- ./configure && make
+ CFLAGS=-std=gnu11 ./configure && make
 
  skip_tests=(
   test_asyncio test_socket # Fail in CI
