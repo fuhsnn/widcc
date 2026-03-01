@@ -723,10 +723,27 @@ static void copy_struct_mem(void) {
 }
 
 static void builtin_alloca(Node *node) {
-  // Shift the temporary area by %rax.
+  println("  mov %%rsp, %%rcx");
   println("  sub %%rax, %%rsp");
-  // Align frame pointer
+
   println("  and $-16, %%rsp");
+  println("  sub %%rsp, %%rcx");
+
+  if (node->kind == ND_ALLOCA_ZINIT) {
+    println("  xorps %%xmm0, %%xmm0");
+    println("2:");
+    println("  sub $16, %%rcx");
+    println("  js 1f");
+    println("  movaps %%xmm0, (%%rsp, %%rcx)");
+  } else {
+    println("2:");
+    println("  sub $4096, %%rcx");
+    println("  js 1f");
+    println("  orb $0, (%%rsp, %%rcx)");
+  }
+  println("  jmp 2b");
+  println("1:");
+
   if (node->var)
     println("  mov %%rsp, %d(%%rbp)", node->var->ofs);
   else
@@ -935,12 +952,6 @@ static void gen_expr(Node *node) {
     return;
   }
   case ND_FUNCALL: {
-    if (node->lhs->kind == ND_VAR && !strcmp(node->lhs->var->name, "alloca")) {
-      gen_expr(node->args->arg_expr);
-      builtin_alloca(node);
-      return;
-    }
-
     // Evaluate function pointer
     gen_expr(node->lhs);
     push();
@@ -1004,6 +1015,7 @@ static void gen_expr(Node *node) {
     println("  lea %s(%%rip), %%rax", node->unique_label);
     return;
   case ND_ALLOCA:
+  case ND_ALLOCA_ZINIT:
     gen_expr(node->lhs);
     builtin_alloca(node);
     return;

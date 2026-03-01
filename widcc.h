@@ -283,7 +283,8 @@ typedef enum {
   ND_VA_COPY,   // "va_copy"
   ND_VA_ARG,    // "va_arg"
   ND_CHAIN,     // ND_COMMA without array-to-pointer conversion
-  ND_ALLOCA
+  ND_ALLOCA,
+  ND_ALLOCA_ZINIT,
 } NodeKind;
 
 // AST node type

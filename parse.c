@@ -975,14 +975,6 @@ static Node *compute_vla_size(Type *ty, Token *tok) {
   return node;
 }
 
-static Node *new_vla(Node *sz, Obj *var) {
-  Node *node = new_unary(ND_ALLOCA, sz, sz->tok);
-  node->ty = pointer_to(ty_void);
-  node->var = var;
-  add_type(sz);
-  return node;
-}
-
 // declaration = declspec (declarator ("=" expr)? ("," declarator ("=" expr)?)*)? ";"
 static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) {
   Node *expr = NULL;
@@ -1023,14 +1015,18 @@ static Node *declaration(Token **rest, Token *tok, Type *basety, VarAttr *attr) 
     }
 
     if (ty->kind == TY_VLA) {
-      if (equal(tok, "="))
-        error_tok(tok, "variable-sized object may not be initialized");
-
-      // Variable length arrays (VLAs) are translated to alloca() calls.
-      // For example, `int x[n+2]` is translated to `tmp = n + 2,
-      // x = alloca(tmp)`.
       Obj *var = new_lvar(get_ident(name), ty);
-      chain_expr(&expr, new_vla(new_var_node(ty->vla_size, name), var));
+
+      Node *node = new_var_node(ty->vla_size, name);
+      node = new_unary(ND_ALLOCA, node, name);
+      node->var = var;
+
+      if (equal(tok, "=")) {
+        tok = skip(skip(tok->next, "{"), "}");
+        node->kind = ND_ALLOCA_ZINIT;
+      }
+
+      chain_expr(&expr, node);
 
       var->vla_next = current_vla;
       current_vla = var;
@@ -3244,11 +3240,11 @@ static Node *primary(Token **rest, Token *tok) {
   }
 
   if (equal(tok, "__builtin_alloca")) {
-    Node *node = new_node(ND_ALLOCA, tok);
-    tok = skip(tok->next, "(");
-    node->lhs = assign(&tok, tok);
+    Node *node = assign(&tok, skip(tok->next, "("));
+    node = new_unary(ND_ALLOCA, node, tok);
     *rest = skip(tok, ")");
-    node->ty = pointer_to(ty_void);
+
+    dont_dealloc_vla = true;
     return node;
   }
 

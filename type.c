@@ -466,6 +466,8 @@ void add_type(Node *node) {
     }
     node->ty = ty_void;
     return;
+  case ND_ALLOCA:
+  case ND_ALLOCA_ZINIT:
   case ND_LABEL_VAL:
     node->ty = pointer_to(ty_void);
     return;
