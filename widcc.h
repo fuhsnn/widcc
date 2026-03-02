@@ -104,7 +104,6 @@ char *format(char *fmt, ...) FMTCHK(1,2);
 typedef enum {
   TK_IDENT,   // Identifiers
   TK_PUNCT,   // Punctuators
-  TK_KEYWORD, // Keywords
   TK_STR,     // String literals
   TK_NUM,     // Numeric literals
   TK_PP_NUM,  // Preprocessing numbers
@@ -112,6 +111,56 @@ typedef enum {
   TK_PMARK,   // Placermarkers
   TK_ATTR,    // GNU attribute
   TK_EOF,     // End-of-file markers
+
+  TK_return,
+  TK_if,
+  TK_else,
+  TK_for,
+  TK_while,
+  TK_do,
+  TK_goto,
+  TK_break,
+  TK_continue,
+  TK_switch,
+  TK_case,
+  TK_default,
+  TK_sizeof,
+  TK_Countof,
+  TK_alignof,
+  TK_asm,
+  TK_static_assert,
+  TK_true,
+  TK_false,
+  TK_nullptr,
+  TK_FUNCTION,
+
+  TK_TYPEKW,
+  TK_void,
+  TK_char,
+  TK_short,
+  TK_int,
+  TK_long,
+  TK_float,
+  TK_double,
+  TK_unsigned,
+  TK_struct,
+  TK_union,
+  TK_enum,
+  TK_typedef,
+  TK_static,
+  TK_extern,
+  TK_auto,
+  TK_register,
+  TK_Noreturn,
+  TK_bool,
+  TK_const,
+  TK_inline,
+  TK_restrict,
+  TK_signed,
+  TK_typeof,
+  TK_thread_local,
+  TK_volatile,
+  TK_TYPEKW_END,
 } TokenKind;
 
 typedef struct File File;
@@ -167,7 +216,7 @@ Token *tokenize(File *file, Token **end);
 Token *tokenize_file(char *filename, Token **end, int *incl_no);
 File *add_input_file(char *path, char *content, int *incl_no);
 void convert_pp_number(Token *tok);
-bool is_keyword(Token *tok);
+TokenKind ident_keyword(Token *tok);
 
 #define internal_error() \
   error("internal error at %s:%d", __FILE__, __LINE__)

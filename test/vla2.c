@@ -9,12 +9,15 @@ void fn(int32_t x){
 
   x = 17;
   B b1[x++], *b2;
+  ASSERT(18, x);
   ASSERT(476, sizeof(b1));
   ASSERT(28, sizeof(*b1));
   ASSERT(28, sizeof(*b2));
 
   typedef int32_t (*C)[++x];
+  ASSERT(19, x);
   C c1[++x], c2;
+  ASSERT(20, x);
   ASSERT(160, sizeof(c1));
   ASSERT(8, sizeof(*c1));
   ASSERT(76, sizeof(**c1));
@@ -28,10 +31,13 @@ void fn(int32_t x){
 
   ASSERT(192, (&a[0] - &b[0]));
   ASSERT(192, (&b[0] - &c[0]));
+
+  int (*p[++x])[++x];
+  ASSERT(9, x);
 }
 
 int fn2(int32_t i) {
-  static (*p)[i];
+  static int32_t (*p)[i];
   return sizeof *p;
 }
 
@@ -45,6 +51,24 @@ int fn4(int i){
   return sizeof(*(char(*)[i+7]){0});
 }
 
+int zinit(int cnt) {
+ {
+   int a[cnt*100];
+   for (int i = 0; i < 100; i++)
+     a[i] = -1;
+ }
+ {
+   int a[cnt*100] = {};
+   int chk = 0;
+
+   for (int i = 0; i < 100; i++)
+     chk |= a[i];
+
+   ASSERT(0, chk);
+ }
+ return 1;
+}
+
 int main(void){
   fn(5);
 
@@ -56,6 +80,7 @@ int main(void){
 
   ASSERT(14, fn4(7));
 
+  ASSERT(1, zinit(1));
 
   printf("OK\n");
 }
