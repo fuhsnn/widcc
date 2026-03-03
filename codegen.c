@@ -1314,7 +1314,6 @@ static void gen_stmt(Node *node) {
       gen_expr(node->inc);
     println("  jmp .L.begin.%d", c);
     println("%s:", node->brk_label);
-    dealloc_vla(node);
     return;
   }
   case ND_DO: {

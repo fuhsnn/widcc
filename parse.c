@@ -157,6 +157,12 @@ static void enter_scope(void) {
   scope = scope->children = sc;
 }
 
+static void enter_isolated_scope(void) {
+  Scope *sc = calloc(1, sizeof(Scope));
+  sc->parent = scope;
+  scope = sc;
+}
+
 static void enter_tmp_scope(void) {
   enter_scope();
   scope->is_temporary = true;
@@ -164,6 +170,18 @@ static void enter_tmp_scope(void) {
 
 static void leave_scope(void) {
   scope = scope->parent;
+}
+
+static void enter_stmt_scope(void) {
+  enter_scope();
+  scope->is_stmt = true;
+}
+
+static Scope *decl_scope(void) {
+  Scope *sc = scope;
+  while (sc->is_temporary || (sc->is_stmt && opt_std == STD_C89))
+    sc = sc->parent;
+  return sc;
 }
 
 // Find a variable by name.
@@ -295,7 +313,7 @@ static Node *cond_cast(Node *expr) {
 
 static VarScope *push_scope(char *name) {
   VarScope *sc = calloc(1, sizeof(VarScope));
-  hashmap_put(&scope->vars, name, sc);
+  hashmap_put(&decl_scope()->vars, name, sc);
   return sc;
 }
 
@@ -409,8 +427,12 @@ static Token *ident_tok(Token **rest, Token *tok) {
   return tok;
 }
 
+static Type *find_tag_in_scope(Token *tok) {
+  return hashmap_get2(&decl_scope()->tags, tok->loc, tok->len);
+}
+
 static void push_tag_scope(Token *tok, Type *ty) {
-  hashmap_put2(&scope->tags, tok->loc, tok->len, ty);
+  hashmap_put2(&decl_scope()->tags, tok->loc, tok->len, ty);
 }
 
 static bool less_eq(Type *ty, int64_t lhs, int64_t rhs) {
@@ -569,7 +591,7 @@ static Type *func_params_old_style(Token **rest, Token *tok, Type *fn_ty) {
   Token *start = tok;
   tok = skip_paren(tok);
 
-  enter_scope();
+  enter_isolated_scope();
   fn_ty->scopes = scope;
   Node *expr = NULL;
 
@@ -644,7 +666,7 @@ static Type *func_params(Token **rest, Token *tok, Type *ty) {
   Obj *cur = &head;
   Node *expr = NULL;
 
-  enter_scope();
+  enter_isolated_scope();
   fn_ty->scopes = scope;
 
   while (comma_list(rest, &tok, ")", cur != &head)) {
@@ -801,7 +823,7 @@ static Type *enum_specifier(Token **rest, Token *tok) {
   tok = skip(tok, "{");
 
   if (tag) {
-    Type *ty2 = hashmap_get2(&scope->tags, tag->loc, tag->len);
+    Type *ty2 = find_tag_in_scope(tag);
     if (ty2) {
       if (ty2->kind == TY_STRUCT || ty2->kind == TY_UNION)
         error_tok(tag, "not an enum tag");
@@ -1693,11 +1715,15 @@ static Node *secondary_block(Token **rest, Token *tok) {
   if (equal(tok, "{"))
     return compound_stmt(rest, tok->next, ND_BLOCK);
 
+  enter_stmt_scope();
+
   Node head = {0};
   Node *cur = &head;
 
   label_stmt(&tok, tok, &cur);
   cur->next = stmt(rest, tok);
+
+  leave_scope();
 
   if (head.next->next) {
     Node *n = new_node(ND_BLOCK, tok);
@@ -1759,6 +1785,7 @@ static Node *stmt(Token **rest, Token *tok) {
   }
 
   if (tok->kind == TK_if) {
+    enter_stmt_scope();
     Node *node = new_node(ND_IF, tok);
     tok = skip(tok->next, "(");
     node->cond = cond_cast(expr(&tok, tok));
@@ -1767,10 +1794,12 @@ static Node *stmt(Token **rest, Token *tok) {
     if (tok->kind == TK_else)
       node->els = secondary_block(&tok, tok->next);
     *rest = tok;
+    leave_scope();
     return node;
   }
 
   if (tok->kind == TK_switch) {
+    enter_stmt_scope();
     Node *node = new_node(ND_SWITCH, tok);
     tok = skip(tok->next, "(");
     node->cond = expr(&tok, tok);
@@ -1793,15 +1822,16 @@ static Node *stmt(Token **rest, Token *tok) {
     current_switch = sw;
     brk_label = brk;
     brk_vla = vla;
+    leave_scope();
     return node;
   }
 
   if (tok->kind == TK_for) {
+    enter_stmt_scope();
+    Obj *vla = current_vla;
+
     Node *node = new_node(ND_FOR, tok);
     tok = skip(tok->next, "(");
-
-    node->target_vla = current_vla;
-    enter_tmp_scope();
 
     if (is_typename(tok)) {
       Type *basety = declspec(&tok, tok, NULL);
@@ -1821,24 +1851,32 @@ static Node *stmt(Token **rest, Token *tok) {
     tok = skip(tok, ")");
 
     loop_body(rest, tok, node);
-
-    node->top_vla = current_vla;
-    current_vla = node->target_vla;
     leave_scope();
+
+    if (vla != current_vla) {
+      Node *n = new_node(ND_BLOCK, tok);
+      n->body = node;
+      n->top_vla = current_vla;
+      n->target_vla = current_vla = vla;
+      return n;
+    }
     return node;
   }
 
   if (tok->kind == TK_while) {
+    enter_stmt_scope();
     Node *node = new_node(ND_FOR, tok);
     tok = skip(tok->next, "(");
     node->cond = cond_cast(expr(&tok, tok));
     tok = skip(tok, ")");
 
     loop_body(rest, tok, node);
+    leave_scope();
     return node;
   }
 
   if (tok->kind == TK_do) {
+    enter_stmt_scope();
     Node *node = new_node(ND_DO, tok);
 
     loop_body(&tok, tok->next, node);
@@ -1848,6 +1886,7 @@ static Node *stmt(Token **rest, Token *tok) {
     node->cond = cond_cast(expr(&tok, tok));
     tok = skip(tok, ")");
     *rest = skip(tok, ";");
+    leave_scope();
     return node;
   }
 
@@ -1900,13 +1939,12 @@ static Node *stmt(Token **rest, Token *tok) {
 }
 
 // compound-stmt = (typedef | declaration | stmt)* "}"
-static Node *compound_stmt(Token **rest, Token *tok, NodeKind kind) {
+static Node *compound_stmt2(Token **rest, Token *tok, NodeKind kind) {
   Node *node = new_node(kind, tok);
   Node head = {0};
   Node *cur = &head;
 
   node->target_vla = current_vla;
-  enter_scope();
 
   for (;;) {
     label_stmt(&tok, tok, &cur);
@@ -1963,6 +2001,11 @@ static Node *compound_stmt(Token **rest, Token *tok, NodeKind kind) {
   node->body = head.next;
   *rest = tok->next;
   return node;
+}
+
+static Node *compound_stmt(Token **rest, Token *tok, NodeKind kind) {
+  enter_scope();
+  return compound_stmt2(rest, tok, kind);
 }
 
 // expr-stmt = expr? ";"
@@ -2868,7 +2911,7 @@ static Type *struct_union_decl(Token **rest, Token *tok, TypeKind kind) {
   if (!tag)
     return ty;
 
-  Type *ty2 = hashmap_get2(&scope->tags, tag->loc, tag->len);
+  Type *ty2 = find_tag_in_scope(tag);
   if (ty2) {
     *ty2 = *ty;
     return ty2;
@@ -3167,14 +3210,11 @@ static Node *primary(Token **rest, Token *tok) {
       gvar_initializer(rest, tok, var);
       return new_var_node(var, start);
     }
-    Scope *sc = scope;
-    while (sc->is_temporary)
-      sc = sc->parent;
 
     Obj *var = new_var(NULL, ty);
     var->is_local = true;
-    var->next = sc->locals;
-    sc->locals = var;
+    var->next = decl_scope()->locals;
+    decl_scope()->locals = var;
 
     Node *lhs = lvar_initializer(rest, tok, var);
     Node *rhs = new_var_node(var, tok);
@@ -3542,7 +3582,7 @@ static void func_definition(Token **rest, Token *tok, Type *ty, VarAttr *attr, T
     ty->scopes = scope;
   }
 
-  fn->body = compound_stmt(rest, tok->next, ND_BLOCK);
+  fn->body = compound_stmt2(rest, tok->next, ND_BLOCK);
 
   if (ty->pre_calc) {
     Node *calc = new_unary(ND_EXPR_STMT, ty->pre_calc, tok);
@@ -3552,7 +3592,6 @@ static void func_definition(Token **rest, Token *tok, Type *ty, VarAttr *attr, T
   if (fn_use_vla && !dont_dealloc_vla && opt_reuse_stack)
     fn->dealloc_vla = true;
 
-  leave_scope();
   resolve_goto_labels();
   current_fn = NULL;
   current_fnname = NULL;
