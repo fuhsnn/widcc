@@ -1339,25 +1339,20 @@ static void gen_stmt(Node *node) {
 
     for (Node *n = node->case_next; n; n = n->case_next) {
       println("  mov %s, %s", ax, cx);
-      println("  mov $%ld, %s", n->begin, dx);
+      println("  mov $%"PRIi64", %s", n->lo, dx);
       println("  sub %s, %s", dx, cx);
-      println("  mov $%ld, %s", n->end - n->begin, dx);
+      println("  mov $%"PRIi64", %s", n->hi - n->lo, dx);
       println("  cmp %s, %s", dx, cx);
-      println("  jbe %s", n->label);
+      println("  jbe %s", n->unique_label);
     }
     if (node->default_case)
-      println("  jmp %s", node->default_case->label);
+      println("  jmp %s", node->default_case->unique_label);
 
     println("  jmp %s", node->brk_label);
     gen_stmt(node->then);
     println("%s:", node->brk_label);
     return;
   }
-  case ND_CASE:
-    println("%s:", node->label);
-    if (node->lhs)
-      gen_stmt(node->lhs);
-    return;
   case ND_BLOCK:
     for (Node *n = node->body; n; n = n->next)
       gen_stmt(n);
@@ -1371,10 +1366,9 @@ static void gen_stmt(Node *node) {
     gen_expr(node->lhs);
     println("  jmp *%%rax");
     return;
+  case ND_CASE:
   case ND_LABEL:
     println("%s:", node->unique_label);
-    if (node->lhs)
-      gen_stmt(node->lhs);
     return;
   case ND_RETURN:
     if (node->lhs) {

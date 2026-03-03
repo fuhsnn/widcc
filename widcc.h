@@ -375,7 +375,6 @@ struct Node {
   Obj *args;
 
   // Goto or labeled statement, or labels-as-values
-  char *label;
   char *unique_label;
   Node *goto_next;
 
@@ -384,8 +383,8 @@ struct Node {
   Node *default_case;
 
   // Case
-  long begin;
-  long end;
+  int64_t lo;
+  int64_t hi;
 
   Obj *target_vla;
   Obj *top_vla;
